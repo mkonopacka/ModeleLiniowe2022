@@ -1,0 +1,298 @@
+---
+title: "Zaawansowane Modele Liniowe - Lista 3"
+subtitle: "Uogólnienia regresji Poissona"
+header-includes:
+   - \usepackage{amsmath}
+output:
+  pdf_document:
+    dev: cairo_pdf
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, message = FALSE, warning = FALSE, cache = TRUE,
+  fig.width = 5, fig.height = 3, fig.align="center")
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(gridExtra)
+library(data.table)
+library(grid)
+library(MASS)
+
+set.seed(0)
+theme10 = theme(text = element_text(size = 7))
+theme10 = theme(text = element_text(size = 10))
+```
+
+# Wstęp
+## Regresja ujemna dwumianowa
+W modelu regresji Poissona zakładaliśmy, że średnie i wariancje poszczególnych obserwacji są sobie równe. W przypadku, gdy założenie to jest złamane i wariancje są większe niż średnie, mówimy o zjawisku **nadmiernej dyspersji**. Ma wtedy sens założenie, że dane pochodzą z rozkładu **ujemnego dwumianowego** z parametrami $\alpha \geq 0, \mu > 0$ i funkcją masy prawdopodobieństwa
+
+$$P(Y_i = y) = \frac{\Gamma(y + \alpha_i^{-1})}{\Gamma(y+1)\Gamma(\alpha_i^{-1})} \left(\frac{\alpha_i^{-1}}{\alpha_i^{-1} + \mu_i}\right)^{\alpha_i^{-1}} \left(\frac{\mu_i}{\alpha_i^{-1} + \mu_i}\right)^y,$$
+
+który dla małych wartości $\alpha_i$ przybliża rozkład Poissona z parametrem $\mu_i$ (zbiega do niego, gdy $\alpha_i \rightarrow 0$), równocześnie zachowując **tę samą wartość oczekiwaną** $E[Y_i] = \mu_i$, ale **większą wariancję** 
+$$Var[Y_i] = \mu_i + \alpha_i \mu_i^2 > \mu_i.$$ 
+
+W modelu regresji ujemnej dwumianowej zakładamy (tak samo jak w modelu regresji Poissona), że dla każdej z $n$ niezależnych obserwacji 
+
+$$log(\mu_i) = X \beta,$$
+
+gdzie $X$ jest $n \times p$ macierzą planu rozszerzoną o wektor jedynek i $\beta \in R^p$. Regresja ujemna dwumianowa z ustalonym $\alpha$ należy do rodziny wykładniczej, więc stosują się do niej wszystkie twierdzenia obowiązujące dla uogólnionych modeli liniowych. Ponadto większość z nich zachodzi również, gdy estymujemy $\alpha$.
+  
+## Modele z inflacją
+Występowanie nadmiernej względem modelu Poissona liczby zer w zmiennej objaśnianej nazywamy **inflacją w zerze**. Taka sytuacja ma miejsce, gdy w pewnym podzbiorze populacji badane zjawisko po prostu nie występuje  (przykładem mogą być osoby niepalące). Do modelowania takich zjawisk użyjemy modelu **ZIPR** (Zero Inflated Poisson Regression). Analogicznie możemy rozważyć użycie modelu **ZINB**, gdy chcemy modelować z użyciem rozkładu ujemnego dwumianowego (gdy występuje też nadmierna dyspersja) ze zjawiskiem inflacji w zerze. W modelach z inflacją zakładamy,  że obserwacje są niezależnymi realizacjami zmiennych losowych pochodzących z mieszanki odpowiedniego rozkładu i rozkladu dwupunktowego (zwiększa się liczba szacowanych parametrów, a szacowane są one metodą największej wiarygodności; model logistyczny na początku decyduje do której podpopulacji nalezy obserwacja). Testowanie globalnej hipotezy o tym czy występuje zjawisko inflacji w zerze przebiega z użyciem statystyki Deviance w sposób przypominający ten opisany w zadaniu 1.
+
+Przy inflacji w zerze oraz nadmiernej dyspersji możemy użyć również tzw. **modelu z barierą** (znowu zakładamy istnienie dwóch podpopulacji gdzie w jednej nie występuje badana cecha, ale mogą one mieć rozkład inny niż dwupunktowy).
+    
+# Zadanie 1
+W tym zadaniu generujemy 10000-krotnie dane z modelu regresji Poissona i dopasowujemy do nich modele Poissona oraz ujemny-dwumianowy w celu weryfikacji hipotezy 
+
+$$H_0: \text{Dane pochodzą z modelu Poissona ($\alpha = 0$)} \quad \text{vs} \quad H_1: \text{Dane pochodzą z modelu regresji ujemnej dwumianowej ($\alpha > 0$)}.$$
+
+Wiadomo, że przy hipotezie zerowej statystyka $\chi^2 = -2(l(M_0) - l(M_1))$ ma asymptotyczny rozkład będący mieszanką rozkładu skoncentrowanego w zerze (50%) oraz $\chi^2$ z 1 stopniem swobody (50%), zatem odrzucimy $H_0$ na poziomie istotności $q$dla wartosci statystyki $\chi^2$ większych od kwantyla rzędu $1 -2q$ z rozkładu $\chi^2_1$. Oznacza to również, że mniej więcej w połowie przypadków $\alpha = 0$.
+
+## Wykresy
+```{r zad1_generate, include=FALSE}
+# Dopasowujemy model bez Interceptu
+n = 1000
+m = 2
+b = c(3,3)
+chi = c()
+alpha= c()
+X = matrix(rnorm(n*m, 0, 1/sqrt(n)), ncol = m)
+
+for (i in 1:5000){
+  eta = X%*%b
+  Y = rpois(n, lambda = exp(eta))
+  model_nb = glm.nb(Y~X-1)
+  model_pois = glm(Y~X-1, family='poisson')
+  # Save values of stats
+  chi= c(chi, -2*as.numeric((logLik(model_pois)-logLik(model_nb))))
+  alpha = c(alpha, 1/model_nb$theta)
+}
+```
+
+```{r zad1_plots, fig.width=12}
+p1_chi = qplot(chi, bins = 100, col = I("black"), fill = I("white")) +
+  labs(
+    x = "", 
+    title = expression(paste("Histogram statystyk ", chi^2)))
+
+# zoom > 0
+geq_zero_chi = chi[which(chi > 0)]
+# Linia chi_2_1
+chi_xs = seq(0.1, max(chi), 0.05)
+chi_points = dchisq(chi_xs, df = 1)
+p2_chi = ggplot() +
+  geom_histogram(aes(x = geq_zero_chi, y = ..density..), bins = 100, col = I("black"), fill = I("white")) +
+  labs(
+    x = "", 
+    title = expression(paste("Histogram gęstości statystyk ", chi^2, " większych od 0"))) +
+  geom_line(aes(x = chi_xs, y = chi_points), col = I("red"))
+
+# Histograms
+grid.arrange(p1_chi, p2_chi, ncol = 2)
+```
+
+**Komentarz:** Wykres po lewej przedstawia rozkład wszystkich punktów. Około połowa z nich jest równa 0. Wykres po prawej przedstawia wszystkie niezerowe punkty - zgodnie z teorią rozkład ich przypomina rozkład $\chi^2_1$ oznaczony czerwoną linią. Analiza przedstawionego poniżej wykresu kwantylowo-kwantylowego potwierdza zgodność wyników z teorią.
+
+```{r}
+# QQplot
+p3_points = qchisq(ppoints(length(chi)), df = 1)
+qqplot(p3_points, chi, main = expression("Q-Q plot rozkładu" ~~ {chi^2}[nu == 1]))
+```
+
+## Wykresy: estymator $\hat \alpha$.
+```{r zad1_plots_alpha, fig.width=12}
+sigma = quantile(alpha, 0.75)/qnorm(0.75)
+h1 = ggplot(data.frame(alpha), aes(x=alpha)) + geom_histogram(color="black", fill="white", aes(y=..density..), bins=50) 
+
+h2 = ggplot(data.frame(alpha), aes(x=alpha)) + geom_histogram(color="black", fill="white", aes(y=..density..), bins=50) +
+  stat_function(fun= function(x) dnorm(x,0,sigma), col='red',size=0.55) +
+  ylim(0,15)
+grid.arrange(h1,h2,ncol=2)
+```
+
+**Komentarz:** W tym przypadku również uzyskujemy wykresy podobne do tych z wykładu - mniej więcej połowa uzyskanych estymatorów $\alpha$ jest równa zero (na tyle blisko $0$, że tak je traktujemy), a pozostałe mają rozkład normalny. Ponizej wykres kwantylowo-kwantylowy dla wszystkich wartości $\hat \alpha$, włącznie z zerowymi (widać je jako prostą linię na poziomie 0, a pozostałe obserwacje układają się zgodnie z przewidywaniami na prostej.)
+
+```{r}
+# QQplot
+p4_points = qnorm(ppoints(length(alpha)), 0, sigma)
+qqplot(p4_points, alpha, main = expression("Q-Q plot rozkładu normalnego"))
+```
+
+# Zadania 2-3
+Zajmiemy się analizą danych medycznych ze zbioru Deb i Trivedi (1997), gdzie zmienną objaśnianą będzie liczba pobytów w szpitalu (`ofp`).
+
+```{r echo=FALSE}
+dane = read.csv("./DebTrivedi.csv", stringsAsFactors=TRUE)
+dane = subset(dane, select=c(hosp, health, numchron, gender, school, privins,ofp))
+head(dane, 3) %>% knitr::kable(caption = "Pierwsze 3 wiersze danych", digits = 3, booktabs = T, format = "pandoc")
+```
+
+## Wstępna analiza
+```{r, fig.width = 4}
+ggplot(dane, aes(x=ofp, y = ..density..)) + 
+  geom_histogram(color="black", fill="white", bins =40) +
+  labs(title = "Histogram gęstości zmiennej objaśnianej", x = "Liczba pobytów w szpitalu (ofp)", y = "") + theme10
+```
+
+**Komentarz:** Wystąpień wartości $0$ jest prawie 1200 z 4406 wszystkich obserwacji. Może to wskazywać na zjawisko inflacji w zerze. Ze względu na duża liczbę 0 wprowadzimy pomocniczą zmienną $f(ofp) = log(ofp + 0.5)$ przez ciągłe przeksztalcenie `ofp`. Następnie porządkujemy zmienne kategoryczne i przygotowujemy wykresy pudełkowe.
+
+```{r}
+dane$f_ofp = log(dane$ofp + 0.5)
+dane_long = dane[,names(dane) != "ofp"] %>% gather(-c("f_ofp"), key = "var", v = "val")
+```
+
+## Boxploty
+```{r, fig.width = 12, fig.height= 8}
+# Wykresy
+# gender
+p1 = ggplot(data = dane, aes(x = gender, y = f_ofp)) +
+  geom_boxplot() + labs(x = "", y = "", title = "f_ofp vs gender") + theme10
+# health
+dane$health = ordered(dane$health, levels = c("poor", "average", "excellent"))
+p2 = ggplot(data = dane, aes(x = health, y = f_ofp)) +
+  geom_boxplot() + labs(x = "", y = "", title = "f_ofp vs health") + theme10
+# numchron
+dane$numchron = ordered(dane$numchron)
+p3 = ggplot(data = dane, aes(x = numchron, y = f_ofp)) +
+  geom_boxplot() + labs(x = "", y = "", title = "f_ofp vs numchron") + theme10
+# hosp
+dane$hosp = ordered(dane$hosp)
+p4 = ggplot(data = dane, aes(x = hosp, y = f_ofp)) +
+  geom_boxplot() + labs(x = "", y = "", title = "f_ofp vs hosp") + theme10
+# school
+school_breaks = c("<3", "[3,6)", "[6,9)", "[9-12)", "[12,15)", ">15")
+setDT(dane)[ , school_interval := cut(
+  school, 
+  breaks = c(0,3,6,9,12,15,100), 
+  right = FALSE, 
+  labels = school_breaks)]
+
+dane$school_interval = ordered(dane$school_interval, levels = school_breaks)
+p5 = ggplot(data = dane, aes(x = school_interval, y = f_ofp)) +
+  geom_boxplot() + labs(x = "", y = "", title = "f_ofp vs school") + theme10
+
+p6 = ggplot(data = dane, aes(x = privins, y = f_ofp)) +
+  geom_boxplot() + labs(x = "", y = "", title = "f_ofp vs privins") + theme10
+
+grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 3)
+```
+
+**Komentarz:**
+
+- regresory różnią się wpływem jaki wywierają na zmienną `f_ofp`.
+- zmienne (pogrupowana) `school`, `gender` i `privins` wydają się nie mieć większego wpływu na odpowiedź, choć widać pewne różnice w rozrzutach.
+- pozostałe zmienne sprawiają wrażenie istotnych, w przypadku niektórych związek jest podobny do liniowego.
+
+# Zadanie 4
+W tym zadaniu zbudujemy różne modele opisane w raporcie i porównamy ich dopasowanie do danych. Przewidujemy zmienną `ofp`. Dopasujemy podstawowe wersje wszystkich 6 modeli z listy, a następnie porównamy ich wersje ze wszystkimi zmiennymi i bez zmiennych potencjalnie nieistotnych na podstawie wykresów, osobno każdej z: `gender`, `privins` i `school`. Testami opartymi o statystykę Deviance sprawdzimy, czy redukcja była słuszna.
+
+```{r zad4 first, include=FALSE}
+library(pscl)
+dane_z4 = dane[, -c("f_ofp", "school_interval")]
+dane_z4$hosp = as.numeric(dane_z4$hosp)
+dane_z4$health = as.numeric(dane_z4$health)
+dane_z4$numchron = as.numeric(dane_z4$numchron)
+dane_z4$school = as.numeric(dane_z4$school)
+
+model_pois = glm(ofp~., data = dane_z4, family="poisson")
+model_nb = glm.nb(ofp~., data = dane_z4)
+model_zipr = zeroinfl(ofp~., data = dane_z4, dist="poisson")
+model_zinbr = zeroinfl(ofp~., data = dane_z4, dist="negbin")
+model_pois_br = hurdle(ofp~., data = dane_z4, dist="poisson")
+model_nb_br = hurdle(ofp~., data = dane_z4, dist="negbin")
+```
+
+```{r zad2 analiza modeli, include=FALSE}
+dane_z4_no_gender = dane_z4[, -c("gender")]
+dane_z4_no_school = dane_z4[, -c("school")]
+dane_z4_no_pr = dane_z4[, -c("privins")]
+dane_z4_no_num = dane_z4[, -c("numchron")]
+dane_z4_no_hosp = dane_z4[, -c("hosp")]
+dane_z4_no_health = dane_z4[, -c("health")]
+
+# Poisson -----
+summary(model_pois)
+
+test_H0 = function(model_full, updated_data, alpha = 0.05){
+  model_reduced = update(model_full, data = updated_data)
+  anov = anova(model_reduced, model_full, test = "Chisq")
+  pval = anov$`Pr(>Chi)`[2]
+  if(pval<alpha){print("Rozne.")}
+  else{print("Takie same.")}
+  }
+
+test_H0(model_pois, dane_z4_no_gender) # rozne
+test_H0(model_pois, dane_z4_no_health) # rozne
+test_H0(model_pois, dane_z4_no_num)    # rozne
+test_H0(model_pois, dane_z4_no_hosp) # rozne
+test_H0(model_pois, dane_z4_no_pr) # rozne
+
+# NegBin -----
+summary(model_nb)
+chi_sq = -2 * (logLik(model_pois) - logLik(model_nb))   # statystka
+pchisq(as.numeric(chi_sq),df = 1, lower.tail = F)   # ????
+
+# ZIPR -----
+summary(model_zipr)
+model_zipr2 = update(model_zipr, data = dane_z4_no_num)
+chi_sq = -2 * (logLik(model_zipr) - logLik(model_pois))
+df=3
+pchisq(as.numeric(chi_sq),df = df, lower.tail = F) # modele sie roznia
+
+# ZINB ---
+# ...
+```
+
+Przeprowadzenie kilku podstawowych testów nie wykazało nieistotnych zmiennych, jedynie wskazało różnice pomiędzy np. modelem Poissona a ZINBR. Wyniki poniżej dotyczą modeli pełnych.
+
+```{r echo=FALSE}
+estymatory_beta <- matrix(0, ncol=6, nrow=7)
+modele <- c(model_pois, model_nb, model_zipr, model_zinbr, model_pois_br, model_nb_br)
+
+names_d <- c("Poiss", "nb", "ZIPR", "ZINBR", "Poiss z bar", "nb z bar")
+
+thety <- c(model_pois$theta, model_nb$theta, model_zipr$theta, model_zinbr$theta, model_pois_br$theta, model_nb_br$theta)
+
+aic <- c(model_pois$aic, model_nb$aic, model_zipr$aic, model_zinbr$aic, model_pois_br$aic, model_nb_br$aic)
+bic <- c(BIC(model_pois), BIC(model_nb), BIC(model_zipr), BIC(model_zinbr), BIC(model_pois_br), BIC(model_nb_br)) 
+
+f_wiaro <- c(logLik(model_pois), logLik(model_nb), logLik(model_zipr), logLik(model_zinbr), logLik(model_pois_br), logLik(model_nb_br))
+
+liczba_param <- c(length(model_pois$coefficients), length(model_nb$coefficients), length(model_zipr$coefficients$count) + length(model_zipr$coefficients$zero), length(model_zinbr$coefficients$count) + length(model_zinbr$coefficients$zero), length(model_pois_br$coefficients$count) + length(model_pois_br$coefficients$zero), length(model_nb_br$coefficients$count) + length(model_nb_br$coefficients$zero))
+
+colnames(estymatory_beta) <- names_d
+rownames(estymatory_beta) <- c("intercept", "hosp", "health", "numchron", "gendermale", "school", "privinsyes") 
+
+estymatory_gamma <- matrix(0, ncol=6, nrow=7)
+colnames(estymatory_gamma)<- names_d
+rownames(estymatory_gamma)<- c("intercept", "hosp", "health", "numchron", "gendermale", "school", "privinsyes") 
+
+estymatory_beta[,1] <- model_pois$coefficients
+estymatory_gamma[,1] <- NA
+estymatory_beta[,2] <- model_nb$coefficients
+estymatory_gamma[,2] <- NA
+estymatory_beta[,3] <- model_zipr$coefficients$count
+estymatory_gamma[,3] <- model_zipr$coefficients$zero
+
+estymatory_beta[,4] <- model_zinbr$coefficients$count
+estymatory_gamma[,4] <- model_zinbr$coefficients$zero
+
+estymatory_beta[,5] <- model_pois_br$coefficients$count
+estymatory_gamma[,5] <- model_pois_br$coefficients$zero
+
+estymatory_beta[,6] <- model_nb_br$coefficients$count
+estymatory_gamma[,6] <- model_nb_br$coefficients$zero
+
+final_result <- rbind(estymatory_beta, estymatory_gamma, thety, liczba_param, aic, bic, f_wiaro)
+
+
+kbl(final_result) %>%
+  pack_rows("Beta", 1,7) %>%
+  pack_rows("Gamma", 8,14) %>%
+  kable_styling(font_size=8.5)
+```
+

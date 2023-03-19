@@ -1,0 +1,599 @@
+---
+title: "ZML - lista1: Regresja logistyczna"
+subtitle: "Funkcje linkujące, ROC, testowanie hipotez o parametrach, macierz informacji Fishera"
+header-includes:
+   - \usepackage{amsmath}
+output:
+  pdf_document:
+    dev: cairo_pdf
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, message = FALSE, warning = FALSE, cache = TRUE,
+  fig.width = 5, fig.height = 3, fig.align = "center")
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(gridExtra)
+library(grid)
+library(pROC)
+library(reshape2)
+library(lemon)
+library(MASS)
+
+set.seed(0)
+theme = theme(title = element_text(size = 7))
+```
+
+# Wstęp
+Badamy zależność pomiędzy binarną zmienną $Y \in \{0,1\}^n$ a macierzą zmiennych rzeczywistych $X$ rozmiaru $n \times p$. Niech $\mu_i = P(Y_i = 1)$. Model regresji logistycznej opisuje równanie
+$$f(\mu_i) = \beta_0 + \beta_1X_{i,1} + ... + \beta_{p-1}X_{n,p-1},$$
+gdzie $f(\mu): [0,1] \rightarrow R$ i $f$ nazywamy **funkcją linkującą**. Standardowo używamy $f(\mu) = logit(\mu) = \log\frac{\mu}{1-\mu}$ i to właśnie od nazwy te (Uwaga: Nazwa "regresja logistyczna" powiązana jest właśnie z użyciem funkcji $logit$. W przypadku innych funkcji linkujących mówimy o uogólnionej regresji liniowej [GLM = generalized linear model] lub używamy nazwy funkcji $f$. Problem jej wyboru zostanie opisany w dalszej części wstępu). Parametry estymujemy korzystając z algorytmów do optymalizacji wypukłej (nie istnieje wzór na $\hat\beta$.) Dla danego zestawu obserwacji jesteśmy w stanie przewidzieć prawdopodobieństwo sukcesu nakładając na wartość $f(\mu)$ odpowiednią funkcję odwrotną (np. $logit(x)^{-1} = sigmoid(x) = \frac{e^x}{e^x + 1}$. Jeśli zamiast prawdopodobieństwa chcemy otrzymać wartość zmiennej $Y$ (problem klasyfikacji), ustalamy pewien próg $t$ i przypisujemy $Y_i$ wartość 0, gdy $\mu_i < t$ lub 1 gdy $\mu \geq t$. Różne progi będą skutkować różnymi stosunkami błędów I i II rodzaju w testowaniu hipotez postaci $H_0: Y = 0$ vs $H_1: Y = 1$. Do wizualizacji wielu możliwych progów na jednym wykresie stosuje się **krzywą ROC** (Reviever-Operator Curve). Wprowadzamy oznaczenia: 
+
+- $TP = \#\{i: \hat Y_i = 1, Y_i = 1\}$ (True Positive), 
+- $FP = \#\{i: \hat Y_i = 1, Y_i = 0\}$ (False Positive), 
+- $TN = \#\{i: \hat Y_i = 0, Y_i = 0\}$ (True Negative), 
+- $FN = \#\{i: \hat Y_i = 0, Y_i = 1\}$ (False Negative). 
+
+Niech **czułość (True Positive Rate)** $TPR := \frac{TP}{TP + FN}$ oraz **specyficzność (True Negative Rate)** $TNR := {TN}{TN + FP}$. Krzywą ROC zwyczajowo rysujemy zaznaczając na osi poziomej wartości $1-TNR$ (False Negative Rate), a na pionowej TPR dla różnych progów $t$. W zależności od konkretnego problemu możemy wybrać różne cele optymalizacji $t$ - w ogólności korzystne będzie znalezienie progu odpowiadającego punktowi na krzywej możliwie blisko $(0,1)$. Klasyfikatory można dodatkowo oceniać porównując pole pod krzywą ROC, tzw. AUC (Area Under the Curve) - im większe jest to pole, tym lepszy punkt na wykresie jesteśmy znaleźć.
+
+Możemy testować istotność współczynników $\beta_i$. Niech $S(\beta)$ będzie macierzą diagonalną $n \times n$, taką że $S_{i,i} = \mu_i(\hat\beta)\cdot(1-\mu_i(\hat\beta))$, gdzie $\mu_i(\hat\beta)$ to wartość $\mu_i$ wyliczona dla konkretnego estymatora $\hat \beta$. Zauważmy, że $S$ jest macierzą **teoretycznej kowariancji zmiennej** $Y$ przy założeniu niezależności obserwacji. Ponadto, postać $S$ zależy od wyboru funkcji linkującej. Wektor $\hat\beta$ ma asymptotycznie rozkład $N(\beta, J^{-1})$, gdzie $$J = X^TS(\beta)X.$$
+
+Macierz $J$ nazywamy **macierzą informacji Fishera**. Można w tym punkcie zauważyć analogię do rozkładu estymatora parametrów w regresji liniowej $\hat\beta \sim N(\beta, \sigma^2(X^TX)^{-1})$.
+
+Hipotezę postaci $H_{0,i}: \beta_i = 0$ vs $H_{1,i}: \beta_i \neq 0$ testujemy z użyciem statystyki testowej **o rozkładzie zbiegającym do $N(0,1)$** 
+$$T = \frac{\hat\beta_i}{s(\hat\beta_i)},$$
+
+gdzie $s(\hat\beta_i) = \sqrt{J^{-1}_{i,i}}$ (testowanie innych hipotez opisano w dalszej części). Wyznaczone eksperymentalnie **asymptotyczne przedziały ufności** są postaci 
+$$\hat \beta_i \pm t_c s(\hat \beta_i),$$
+
+gdzie $t_c = \Phi^{-1}_{N(0,1)}(1 - \frac{\alpha}{2})$ (uwaga: w regresji liniowej przy wyznaczaniu empirycznych przedziałów używaliśmy rozkładu Studenta.)
+
+## Testowanie hipotez w oparciu o statystykę Deviance
+Przy modelach liniowych miarą dopasowania modelu do danych była suma kwadratów residuów $RSS = ||\hat Y - Y||^2_2$. W modelu regresji logistycznej podobną funkcę pełni statystyka $Deviance$ zdefiniowana jako:
+$$D(\hat\beta) = 2 \sum^n_{i=1} y_i \log \left(\frac{y_i}{\mu_i(\hat\beta)} \right) + (1 - y_i) \log \left(\frac{1-y_i}{1-\mu_i(\hat\beta)} \right)$$
+Można zauważyć, że jest to podwojona suma wyrażeń postaci $\log(\tilde \mu_i)^{-1} = -log(\tilde \mu_i)$, gdzie $\tilde \mu_i$ jest przewidzianym przez model prawdopodobieństwem sukcesu, gdy $y_i$ jest sukcesem lub przewidzianym przez model prawdopodobieństwem porażki, gdy $y_i$ jest porażką. Dla $\tilde\mu \in (0,1)$ funkcja $-\log(\tilde\mu)$ przyjmuje wartości dodatnie, tym mniejsze im większe jest przewidziane prawdopodobieństwo, zatem gdy model często przewiduje duże prawdopodobieństwa sukcesu dla sukcesów i porażki dla porażek, wartość $Deviance$ będzie mała.
+
+Alternatywnie statystykę można wyrazić jako podwojoną sumę funkcji log-wiaogodnosci pomiędzy modelem saturowanym ($s$) a zredukowanym ($r$), tzn.
+$$D(\hat\beta) = 2[l(\hat\beta^{(s)}) - l(\hat\beta^{(r)})],$$
+
+gdzie przez model zredukowany rozumiemy rozważany przez nas model, dla którego
+$$l(\hat\beta^{(r)}) = \sum^n_{i=1} y_i \log(\hat\mu_i(\hat\beta)) + (1-y_i)\log(1-\hat\mu_i(\hat\beta)),$$
+a przez model saturowany rozumiemy hipotetyczny model w którym liczba parametrów równa się liczbie obserwacji ($p = n$), a więc jesteśmy w stanie uzyskać idealne dopasowanie do danych a funkcja log-wiarygodności przybiera postać w której wszystkie $\mu_i(\hat\beta)$ we wzorze powyżej zamieniają się na $y_i$.
+
+Statystyka $Deviance$ jest używana do testowania różnych hipotez statystycznych. Rozważmy niepusty podzbiór $A \subset \{0, ... p\}$ i hipotezę postaci
+$$H_0: \forall (i \in A) \beta_i = 0 \quad\mathrm{vs}\quad \exists (i \in A) \beta_i \neq 0.$$
+Niech $\hat\beta^{(k)}$ oznacza model stowarzyszony z hipotezą $H_k$. Wówczas statystyka 
+$$\chi^2 = D(\hat\beta^{(0)}) - D(\hat\beta^{(1)})$$ 
+ma przy hipotezie zerowej asymtotycznie rozkład $\chi^2_{|A|}$ z $|A|$ stopniami swobody, a więc odrzucimy $H_0$ gdy $\chi^2 > t_c$, gdzie $t_c$ jest kwantylem rozkładu $\chi^2_{|A|}$ rzędu $\alpha$. Zagadnienie to będziemy nazywać **równoczesnym testowaniem istotności wielu parametrów**. Uwaga: wartości zwracane przez `summary` w R to odpowiednio:
+
+- `Null Deviance`: $D(\beta^{(0)})$ gdzie $H_0$ zakłada, że wszystkie współczynniki **oprócz wyrazu wolnego $\beta_0$** są zerowe.
+
+- `Residual Deviance`: $D(\beta^{(1)})$ gdzie $H_1$ zakłada, że żaden współczynnik nie jest zerowy.
+
+Wtedy $A = \{1, ... p\}$, a więc statystyka $\chi^2_{|A|}$ ma rozkład z liczbą stopni swobody równej liczbie kolumn macierzy planu. Wiedzę tę wykorzystamy w zadaniu 6.
+
+## Różne funkcje linkujące
+#### Logit
+Ze względu na wygodne własności matematyczne nazywana **kanoniczną funkcją linkującą** i używana domyślnie. Występujące w niej wyrażenie $\frac{\mu}{1-\mu}$ można interpretować jako stosunek prawdopodobieństwa wygranej do porażki - wielkość ta ma duże znaczenie w hazardzie, gdzie znana jest pod nazwą **odds** ("szanse"). Wartości zmieniają się od $-\inf$ do $\inf$, symetrycznie względem $0$.
+
+### Probit
+Załóżmy, że podejrzewamy że zmienna $Y_i$ jest "obcięciem" regresji liniowej opisanej równaniem $\tilde Y_i = -X_i \cdot \beta + \epsilon_i$ z błędem losowym $\epsilon \sim N(0,1)$, tzn. że
+
+$$
+Y_i = \begin{cases}
+    1,& \text{gdy } \tilde Y_i \leq 0\\
+    0,              & \text{gdy }  \tilde Y_i > 0
+\end{cases}
+$$
+
+$$P(Y_i = 1) = P(\tilde Y_i \leq 0) = P(\epsilon_i \leq X_i \cdot \beta) = \Phi(X_i \cdot \beta) \implies X_i \cdot \beta = \Phi^{-1}(\mu_i)$$
+
+Występujący po lewej stronie iloczyn skalarny odpowiada kombinacji liniowej kolumn macierzy planu w regresji liniowej, natomiast wyrażenie po prawej stronie odpowiada nałożeniu na $\mu_i$ funkcji kwantylowej rozkładu normalnego standardowego. W celu uzyskania wartości $\mu_i$ na kombinację liniową nałożymy funkcję odwrotną, czyli dystrybuantę $\Phi_{N(0,1)}$. Taki model nazywamy regresją probitową.
+
+### Cloglog
+Analogiczne rozumowanie przeprowadzimy w przypadku, gdy podejrzewamy, że zmienna $Y_i$ powstała jako "obcięcie" zmiennej o rozkładzie Poissona $\tilde Y_i \sim Poisson(\lambda_i)$, gdzie $\lambda_i = e^{X_i \cdot \beta}$. Definiujemy następujące obcięcie:
+
+$$
+Y_i = \begin{cases}
+    1,& \text{gdy } \tilde Y_i \geq 0\\
+    0,              & \text{gdy }  \tilde Y_i = 0
+\end{cases}
+$$
+
+$$P(Y_i = 1) = P(\tilde Y_i \geq 0) = 1 - P(\tilde Y_i = 0) = 1 - e^{-\lambda_i} = 1 - exp(-exp(X_i \cdot \beta)) \implies X_i \cdot \beta = ln(ln(1 - \mu_i))$$
+stąd funkcja linkująca jest postaci $f(x) = ln(-ln(1-x))$ ("complementary log-log function"). Przykladem sytuacji, gdy ma sens zastosowanie tego typu regresji jest badanie w którym obserwowana zmienna kodowałaby odpowiedź na pytanie "czy danego dnia były jakieś wypadki drogowe?" - liczbę wypadków można modelować za pomocą rozkładu Poissona, jednak nas nie obchodzi ich konkretna ilość, tylko czy było ich więcej niż 0. (Analogicznie jako przykład dla regresji probitowej możnabyło podać badanie w którym zmienna koduje np. odpowiedź na pytanie "czy IQ osoby jest powyżej znanej nam średniej?", gdzie zakładamy że IQ ma rozkład normalny.)
+
+### Cauchit
+Tak jak w przypadku probitu funkcą linkującą był kwantyl rozkładu normalnego standardowego, tak w przypadku cauchitu jest nią kwantyl rozkładu Cauchy'ego.
+
+
+```{r links_plot, fig.width = 6, fig.height= 3.5}
+xs = seq(0.01,0.99,0.01)
+logit = log(xs/(1-xs))
+probit = qnorm(xs)
+cloglog = log(-log(1-xs))
+cauchit = qcauchy(xs)
+
+plt1 = data.frame(xs, logit, probit, cauchit, cloglog) %>%
+  melt(id.vars = "xs") %>% ggplot(aes(xs,value, col = variable)) +
+  geom_line() +
+  # geom_hline(yintercept = 0, linetype = "dashed") +
+  # geom_vline(xintercept = 0.5, linetype = "dashed") +
+  labs(x = "", y = "", color = "", title = "Wykres pełny") + theme
+
+plt2 = plt1 + ylim(-5,5) + labs(title = "Wykres przycięty")
+
+top = textGrob("Porównanie 4 funkcji linkujących na przedziale (0,1)", gp = gpar(fontface = 1, fontsize = 10, just = "top"))
+grid_arrange_shared_legend(plt1, plt2, ncol = 2, top = top)
+```
+
+
+# Analiza danych
+## Zadania 1-3
+Zbiór danych "Lista_1.csv" zawiera kolumny `X` - numer obserwacji, `numeracy` - wynik testu, `anxiety` - poziom niepewności oraz `success` - czy studenta przyjęto na studia (1/0 - tak/ nie).
+
+```{r load_data}
+data <- read.csv("lista_1.csv")
+data$success <- factor(data$success)
+```
+
+```{r zad2}
+theme = theme(title = element_text(size = 7))
+ggplot(data, aes(x = success, y = numeracy, group = success)) + 
+  geom_boxplot(outlier.shape = 2) + 
+  geom_jitter(aes(col = anxiety), size = 3, alpha = 0.9) +
+  scale_colour_gradient("Poziom niepewności", low = "yellow", high = "purple", na.value = NA) +
+  labs(title = "Wyniki testów w rozbiciu na grupę przyjętych i nieprzyjętych", x = "", y = "Wynik testu") +
+  scale_x_discrete(labels = c("Nieprzyjęci", "Przyjęci")) + theme
+```
+
+**Komentarz**:
+
+- Zakresy międzykwartylowe dwóch grup są niemal rozłączne, tzn. wartość III kwartyla w grupie nieprzyjętych leży tylko nieznacznie powyżej I kwartyla w grupie przyjętych. 
+- Średnia wyników przyjętych jest o około 1 punkt większa niż maksymalny wynik drugiej grupy.
+- Powyższe obserwacje wskazują na statystycznie znaczącą różnicę pomiędzy grupami. Należy jednak zwrócić uwagę na duży maksymalny rozrzut w pierwszej grupie i występujące na dole wykresu obserwacje (nie są one z definicji odstające, gdyż nie leżą w przedziale $(Q1 - 1.5 \cdot IQR, Q3 + 1.5 \cdot IQR)$) w pobliżu średniej grupy pierwszej i możliwość błędnej klasyfikacji takich przypadków.
+- Po naniesieniu na wykres dodatkowo poszczególnych obserwacji pokolorowanych zależnie od poziomu niepewności można zauważyć, że wyższe jego wartości są charakterystyczne dla osób nieprzyjętych na studia. W ich grupie nie znalazł się nikt z wynikiem poniżej 12 punktów, natomiast wydaje się że w drugiej grupie nie ma nikogo z wynikiem powyżej 16. 
+- Na wykresach widać występowanie pewnej korelacji pomiędzy zmiennymi objaśniającymi (założenie o niezależności jest często łamane w praktyce).
+
+```{r zad2_odst, include=FALSE}
+# Sprawdzenie obserwacji odstających
+data %>% group_by(success) %>% summarise(
+  Q1 = quantile(numeracy, 0.25), 
+  Q3 = quantile(numeracy, 0.75),
+  ) %>% mutate(
+    IQR = Q3 - Q1,
+    out_low = Q1 - 1.5*IQR,
+    out_high = Q3 + 1.5*IQR
+  )
+```
+
+```{r zad3}
+ggplot(data, aes(x = success, y = anxiety, group = success)) + 
+  geom_boxplot(outlier.shape = 2) + 
+  geom_jitter(aes(col = numeracy), size = 3, alpha = 0.9) +
+  scale_colour_gradient("Wynik testu", low = "yellow", high = "purple", na.value = NA) +
+  labs(title = "Poziom niepewności w rozbiciu na grupę przyjętych i nieprzyjętych", x = "", y = "Poziom niepewności") +
+  scale_x_discrete(labels = c("Nieprzyjęci", "Przyjęci")) + theme
+```
+
+**Komentarz:**
+
+- Wygląd wykresu potwierdza wniosek z poprzedniego zadania: grupa osób nieprzyjętych na studia odznacza się statystycznie wyższym poziomem niepewności. 
+- Można zauważyć, że I kwartyl w pierwszej grupie w przybliżeniu pokrywa się z III kwartylem w grupie drugiej.
+- Całkowite rozrzuty wyników są mniej różne niż te w poprzednim zadaniu.
+- Po dodatkowym naniesieniu punktów pokolorowanych zgodnie z wartościami zmiennej `numeracy` możemy ponownie zauważyć, że grupa osób przyjętych ma statystycznie wyższe wyniki testu.
+
+## Zadanie 4
+```{r load_model, include=FALSE}
+model = glm(success ~ numeracy + anxiety, data = data, family = "binomial")
+model
+```
+
+Z użyciem funkcji `glm` uzyskaliśmy model opisany równaniem $log(\frac{\mu_i}{1 - \mu_i}) = \beta_0 + \beta_1 \cdot X_{i,1} + \beta_2 \cdot X_{i,2}$, gdzie: 
+$\mu_i$ to prawdopodobieństwo bycia przyjętym na studia przez i-tego studenta, czyli wartość oczekiwana zmiennej $Y_i$ (`success`),
+$X_{i,1}$ to wartość zmiennej `numeracy` dla i-tego studenta, a $X_{i,2}$ to wartość zmiennej `anxiety` dla i-tego studenta.
+
+**Odpowiedzi do zadania:**
+
+Wartości estymatorów parametrów oraz poziomy istotności możemy odczytać z `summary(model)`
+
+```{r zad4_1}
+summary(model)$coefficients[,c(1,4)] %>% data.frame() %>% knitr::kable(caption = "Estymatory parametrów i ich p-wartości w zadaniu 4", digits = 2, booktabs = T, format = "pandoc") 
+```
+
+Prawdopodobieństwo wyznaczone z użyciem `predict.glm` wynosi ok. 88%. Możemy dodatkowo zwizualizować predykowane wartości $\mu$ dla wszystkich punktów dostępnych w użytym zbiorze danych i porównać je ze znanym wynikiem testu. W kolejnym podpunkcie ustalimy najlepszy próg odcięcia (wartość $t$ powyżej której mapujemy $\mu$ na wartości $Y = 1$.)
+
+```{r zad4_2, include=FALSE}
+newdata = data.frame(anxiety = 13, numeracy = 10)
+predict.glm(model, newdata, type = "response")
+```
+
+```{r zad4_preds}
+data_pred = cbind(data, "prediction" = predict(model, type = "response"))
+ggplot(data_pred, aes(numeracy, anxiety)) +
+  geom_point(size = 3, aes(shape = success, fill = prediction)) +
+  labs(title = "Predykcje modelu dla punktów ze zbioru lista_1.csv", x = "Wynik testu", y = "Poziom niepewności") +
+  scale_fill_gradient("Wartość predykcji", low = "yellow", high = "blue", na.value = NA) +
+  scale_shape_manual("Wynik rekrutacji", values = c(21, 23), labels = c("Nieprzyjęty", "Przyjęty")) +
+  theme
+    
+``` 
+
+Do narysowania krzywej, obliczenia AUC i znalezienia optymalnego progu używamy funkcji z pakietu `pROC`. 
+
+```{r zad4_ROC, fig.width = 3, fig.height= 3}
+roc_plot = function(responses, predictions){
+  # zwraca wykres oraz best_coords
+  roc_obj = pROC::roc(predictor = predictions, response = responses)
+  best_coords = coords(roc_obj, "best", ret = c("threshold", "fnr", "tpr"),
+                       best.method = "closest.topleft")
+  fnr = best_coords$fnr
+  tpr = best_coords$tpr
+  t = best_coords$threshold
+  auc = round(auc(roc_obj)[[1]], 8)
+  plot = ggroc(roc_obj, legacy.axes = TRUE) +
+    labs(title = paste("Krzywa ROC (AUC:", auc, ")"), 
+         x = "False Negative Rate", y = "True Positive Rate", 
+         subtitle = paste("Najlepsza odległość od (0,1) dla progu odcięcia wynosi około ", t)) +
+    geom_point(x = fnr, y = tpr, col = "red") +
+    annotate(
+      "text", x = fnr, y = tpr - 0.07, hjust = 0, 
+      label = paste("t ~ ", round(t,3), ", (FNR ~ ", round(fnr,3), 
+                    ", TPR ~ ", round(tpr,3), ")", sep = ""), size = 2.5) + 
+    theme
+  return(list(plot, best_coords))
+}
+
+roc_plot_zad4 = roc_plot(data_pred$success, data_pred$prediction)
+roc_plot_zad4[[1]]
+```
+
+**Komentarz:** Klasyfikator można ocenić jako całkiem dobry - pole pod wykresem ROC wynosi około 0.95. Punkt optymalny pod względem odległości od $(0,1)$ odpowiada $FNR \approx 0,14$ i $TPR \approx 0,86$ dla progu odcięcia około $0,56$.
+
+## Zadanie 5 - różne funkcje linkujące
+
+```{r zad5_setup}
+links = c("probit", "cauchit", "cloglog")
+models = list()
+plots = list()
+best_coords = list()
+models[[1]] = model # poprzedni model
+plots[[1]] = roc_plot_zad4[[1]]
+best_coords[[1]] = roc_plot_zad4[[2]]
+for (i in 1:3){
+  L = links[[i]]
+  models[[i+1]] = glm(success ~ numeracy + anxiety, data = data, family = binomial(link = L))
+  preds = predict(models[[i+1]], type = "response") # zapisujemy nowe predykcje
+  data_pred[paste("pred_", L, sep = "")] = preds # nowa kolumna w data_pred
+  roc_plot_result = roc_plot(data_pred$success, preds) # zapisujemy wykres i best_coords
+  plots[[i+1]] = roc_plot_result[[1]]
+  best_coords[[i+1]] = roc_plot_result[[2]]
+}
+```
+
+```{r zad5_plots, fig.width = 5.5, fig.height= 5.5}
+# Zmiana nazw na wykresach
+names = c("logit", links)
+for (i in 1:length(plots)){
+  plots[[i]] = plots[[i]] + labs(subtitle = paste("Funkcja linkująca:",names[i]))
+}
+
+grid.arrange(grobs = plots, ncol = 2)
+```
+
+**Komentarz:** Krzywe ROC dla modeli korzystających z różnych funkcji linkujących wyglądają bardzo podobnie. W każdym przypadku AUC wynosi w przybliżeniu 0.95, różnice pod tym względem są naprawdę zaniedbywalne i gdy przybliżamy AUC do 8 miejsc po przecinku trzy modele mają tę samą jego wartość, minimalnie gorszy jest model $cloglog$. Można natomiast zauważyć pewną różnicę w wybranych progach optymalnych pod względem minimalizacji odległości od $(0,1)$. 
+
+Pomocne w zrozumieniu skąd taka różnica się bierze będzie wyrysowanie wartości $\mu_i$ zwracanych przez poszczególne modele wraz ze znalezionymi progami. Na wykresie poniżej zaznaczono dodatkowo liniami poziomymi obserwacje, gdzie prawdziwa wartość $Y$ to 1.
+
+```{r zad5_preds, fig.width = 9, fig.height= 5.5}
+drop_cols_zad5 = c("numeracy", "anxiety", "success")
+plot_data = data_pred[,!names(data_pred) %in% drop_cols_zad5]
+colnames(plot_data) = c("ID", "logit", "probit", "cauchit", "cloglog")
+plot_data["mean_prediction"] = rowMeans(dplyr::select(plot_data, logit:cloglog))
+
+rows_order = order(plot_data$mean_prediction)
+sorted_data = plot_data[rows_order,] 
+sorted_data["ID"] = 1:nrow(plot_data)
+
+melted_data = melt(
+  sorted_data[, names(sorted_data) != "mean_prediction"], 
+  id.vars = "ID")
+
+plt_base = ggplot() +
+  geom_point(data = melted_data, aes(x = ID, y = value, col = variable)) +
+  geom_line(data = sorted_data, aes(x = ID, y = mean_prediction)) + 
+  labs(
+    title = "Wartości predykcji dla różnych modeli",
+    subtitle = "linia ciągła: uśrednione wartości predykcji; linie przerywane: progi dla poszczególnych modeli;\nlinie pionowe: miejsca gdzie Y_i = 1 (prawdziwa wartość zmiennej)",
+    y = "", x = "ID obserwacji posortowane wg. średniej wart. predykcji", col = "Funkcja linkująca") 
+
+# Dodanie do wykresu progów oraz prawdziwych sukcesów
+thresholds = rbind(best_coords[[1]], best_coords[[2]], best_coords[[3]], best_coords[[4]])
+thresholds["value"] = c("logit", "probit", "cauchit", "cloglog")
+success_inds = which(data_pred$success[rows_order] == 1)
+
+plt_base + 
+  geom_hline(
+    data = thresholds,
+    aes(yintercept = threshold, col = value),
+    linetype = "dashed") +
+  geom_vline(xintercept = success_inds, size = 0.1, col = I("darkgreen"))
+```
+
+Predykcje modeli $logit$ i $probit$ są bardzo podobne; trzymają się również najbliżej średniej wśród wszystkich modeli. Wartości najbardziej różnią się właśnie w okolicy wyznaczonych progów. Na wykresie widać na przykład, że istnieją 3 obserwacje które leżą poniżej progu odcięcia modelu $cloglog$ równocześnie będąc klasyfikowane jako sukces przez pozostałe modele (w tym 2 z nich są rzeczywiście sukcesami). Podobnie istnieją obserwacje, które wszystkie modele oprócz $cauchit$ uznają za porażki. Prawdopodobnie przy większej liczbie obserwacji lub innym charakterze danych różnic byłoby więcej.
+
+## Zadanie 6 
+Wracamy do modelu $logit$. Na początku porównamy odchylenia standardowe estymatorów $\hat \beta_i$ wyliczone ręcznie (sposobem opisanym we wstępie) z wartościami zwróconymi przez `summary`.
+
+```{r zad6_Jinv}
+logitmodel = models[[1]]
+X = model.matrix(logitmodel)
+prob = predict.glm(logitmodel, type = "response")
+S = diag(prob*(1-prob))
+inv_fisher_I = solve(t(X)%*%S%*%X)
+comp = sqrt(diag(inv_fisher_I))
+from_r = as.numeric(summary(logitmodel)$coefficients[,"Std. Error"])
+data.frame("Obliczone ręcznie" = comp, "Std. Err. z summary(model)" = from_r) %>% t() %>% knitr::kable(caption = "Porównanie wartości w zadaniu 6", booktabs = T) %>% kable_styling(latex_options = c("striped", "scale_down", "HOLD_position"))
+```
+
+Widać, że wyniki są z dokładnością do kilku miejsc po przecinku identyczne. W dalszej części zadania testujemy hipotezę postaci $H_0: \beta_1, \beta_2 = 0$ vs $H_1: \beta_1 \neq 0 \lor \beta_2 \neq 0$. Jak zostało wspomniane we wstępie, można łatwo zrobić wyjmując odpowienie wartości z obiektu modelu. P-wartość statystyki testowej obliczymy jako $1 - F(\chi^2_{|A|})$, za liczbę stopni swobody podstawiając różnicę pomiędzy stopniami swobody modeli $s$ i $r$.
+
+```{r zad_hipotezy, echo=TRUE}
+chi2_stat = logitmodel$null.deviance - logitmodel$deviance # statystyka
+1 - pchisq(chi2_stat, df = logitmodel$df.null - logitmodel$df.residual) # p-wartość
+```
+
+Uzyskana p-wartość jest bardzo mała, w szczególności np. $pval < 0.05$ więc odrzucimy hipotezę zerową na poziomie istotnosci $0.05$.
+
+W ramach ostatniego podpunktu sprawdzimy, jaki wpływ na model ma parameter `epsilon` podawany do funkcji `glm` podczas jego tworzenia. Parametr ten reguluje rozmiar "kroku" robionego przez wybrany algorytm optymalizacyjny. Wpływa on na dokładność wyznaczania optimum, ale również liczbę iteracji w których algorytm zbiegnie. W dokumentacji można przeczytać, że dopasowywanie modelu regresji logistycznej przebiega z użyciem metody IWLS (Iteratively reweighted least squares), a wywołanie `model$control` pokazuje, że w aktualnym modelu użyliśmy `epsilon = 10^{-8}`. Dodatkowo można z użyciem `model$converged` sprawdzić czy algorytm zbiegł czy zatrzymał się bez znalezienia optimum ze względu na przekroczenie dozwolonej liczby iteracji.
+
+```{r zad_6_epsilon}
+models_zad6 = list()
+expos = c(-1,-2,-3,-6,-8,-12,-16,-22)
+for (expo in expos){
+  eps = 10^expo
+  m = glm(success ~ numeracy + anxiety, data = data, family = "binomial", epsilon = eps)
+  models_zad6[[length(models_zad6)+1]] = m
+}
+
+rows = list()
+for (m in models_zad6){
+  cf = as.numeric(m$coefficients)
+  rows[[length(rows)+1]] = t(c(
+    epsilon = as.character(m$control$epsilon),
+    conv = as.logical(m$converged),
+    steps = m$iter,
+    beta0 = cf[1], 
+    beta1 = cf[2], 
+    beta2 = cf[3],
+    deviance = m$deviance
+  ))
+}
+
+do.call(rbind.data.frame, rows) %>% knitr::kable(caption = "Zadanie 6 - wyniki liczbowe podpunktu z parametrem epsilon", booktabs = T) %>% kable_styling(latex_options = c("scale_down", "HOLD_position"))
+```
+
+**Komentarz:** Dla wszystkich wartości `epsilon` algorytm zbiegł - w każdym przypadku ilość potrzebnych iteracji była dosyć mała, choć dla mniejszych `epsilon` trochę większa niż dla większych (różnica byłaby bardziej widoczna w przypadku "trudniejszych" danych, np. ze znacznie większą macierzą planu lub inną zależnością $Y$ od $X$.) Jak widać, istnieją subtelne różnice w wartościach znalezionych parametrów i modele o mniejszym kroku są minimalnie lepsze pod względem statystyki $deviance$ (`Null Deviance` jest taka sama dla każdego modelu), ale różnica jest naprawdę niewielka i widoczna do 12 miejsca po przecinku tylko poniżej `epsilon = 10^-6`.
+
+# Symulacje
+## Zadanie 1
+Generujemy wektor odpowiedzi długości $n = 4000$ taki, że $log(\frac{\mu_i}{1 - \mu_i}) = 3 \cdot X_{i,1} + 3 \cdot X_{i,2} + 3 \cdot X_{i,3}$. Wartość $\mu_i$ otrzymujemy nakładając na wyrażenie funkcję $sigmoid$. Zmienne $Y_i$ uzyskujemy losując zmienne z rozkładu zero-jedynkowego z prawdopodobieństwami $mu_i$.
+
+```{r zad1_setup}
+rm(list = ls()) # clear environment so that vars names are ok
+sigmoid = function(x){return(1/(1+exp(-x)))}
+fisher_matrix = function(X, beta){
+  # Oblicza macierz Fishera dla znanego X i beta bez interceptu
+  logits = X %*% beta
+  probs = sigmoid(logits)
+  Sd = probs*(1-probs)
+  S = diag(as.numeric(Sd))
+  fisher = t(X) %*% S %*% X
+  return(fisher)
+}
+
+plot_beta_i = function(i, betas_dtf, true_betas, J_inverse){
+  # Returns histogram of beta_i with added extra lines
+  sd = sqrt(diag(J_inverse))[i] # theoretical std.dev. of beta estimator
+  tb = true_betas[i]         # mean of theoretical distribution
+  sigma_lines = c(tb+sd, tb-sd, tb+2*sd, tb-2*sd, tb+3*sd, tb-3*sd)
+  
+  plt = ggplot() + 
+  geom_histogram(aes(x = betas_dtf[,i], y = ..density..), 
+                 fill = I("darkgrey"), col = I("black")) + 
+  labs(x = paste("beta_", i, sep=""), y = "") +
+  geom_vline(xintercept = tb, col = I("red")) +
+  geom_vline(xintercept = sigma_lines, linetype = "dashed") +
+  ylim(0, 0.25) +
+  geom_segment(aes(x = tb, y = 0.23, xend = tb+sd, yend = 0.23)) +
+  annotate("text", x = tb + sd/2, y = 0.24, label = round(sd,2))
+  # Add normal curve for theoretical distribution of beta estimator
+  density_ys = dnorm(betas_dtf[,i], mean = tb, sd = sd)
+  plot_with_curve = plt + geom_line(aes(x = betas_dtf[,i], y = density_ys))
+  return(plot_with_curve)
+}
+
+get_simulation_results = function(n, p, Sigma, iter = 5000){
+  set.seed(0)
+  true_beta = rep.int(3,p)
+  X = mvrnorm(n, rep.int(0,p), Sigma)
+  logits = as.numeric(sigmoid(X %*% true_beta))
+  
+  beta_dtf = matrix(nrow = iter, ncol = p) # empty dataframe for storing betas
+  J_inv = solve(fisher_matrix(X, true_beta)) # asymptotic covariance
+  
+  # Generate Y multiple times and reestimate beta, save coefficients to dtf
+  for (i in 1:iter){
+    Y = rbinom(n,1,logits)
+    model = glm(Y~X-1, family = binomial())
+    beta_dtf[i,] = as.numeric(model$coefficients)
+  }
+  # Create histograms of betas using passed data and theoretical values
+  plots_lst = lapply(1:p, function(i){plot_beta_i(i, beta_dtf, true_beta, J_inv)})
+  
+  # Calculate some extra stats
+  biases = colMeans(beta_dtf) - true_beta
+  estimated_cov = cov(beta_dtf)
+  
+  # Return list of objects
+  return(list(
+    beta_dtf = beta_dtf, 
+    J_inv= J_inv, 
+    plots_lst = plots_lst,
+    biases = biases,
+    estimated_cov = estimated_cov
+    ))
+}
+```
+
+```{r zad1_get_results}
+n = 400
+p = 3
+zad1_results = get_simulation_results(n,p, Sigma = diag(1/400, p, p))
+```
+
+Obliczamy macierz informacji Fishera z użyciem wygererowanych $X$ i $\beta = (3,3,3)$. Asymptotyczna macierz kowariancji powstała przez jej odwrócenie ma postać:
+
+```{r}
+zad1_results$J_inv
+```
+
+Wariancje estymatorów wyznaczone na podstawie wielu replikacji eksperymentu powinny zbiegać do tych wartości. Na wykresach poniżej widoczne są histogramy uzyskanych w 5000 replikacjach estymatorów. Liniami przerywanymi zaznaczono odległości $\sigma$ od średniej, a ciągłą linią asymptotyczną gęstość $\hat\beta_i$.
+
+```{r zad1_histograms, fig.width = 8.5, fig.height = 4}
+top = textGrob("Zadanie 1: Histogramy estymatorów z naniesioną gęstością teoretyczną", gp = gpar(fontface = 1, fontsize = 12, just = "top"))
+grid.arrange(grobs = zad1_results$plots, ncol = 3, top = top)
+```
+
+**Komentarz:** Rozkłady estymatorów wyglądają na zgodne z rozkładem asymptotycznym.
+
+Na podstawie wygenerowanych $\hat \beta$ estymujemy obciążenie estymatorów
+$$b(\hat\beta_i) = E(\hat \beta_i) - \beta_i$$
+gdzie za wartość oczekiwaną $\hat \beta_i,$ podstawiamy średnią próbkową estymatora. Uzyskamy w ten sposób obciążenia małe, ale niezerowe (nawet przy liczbie powtórzeń zwiększonej do 10000), co sugeruje że estymator MLE jest w tym przypadku obciążony. 
+
+```{r echo=TRUE}
+zad1_results$biases
+```
+
+W ramach ostatniego podpunktu porównamy empiryczną macierz kowariancji $\hat \beta$ z teoretyczną. Róznice nie są duże:
+
+```{r echo=TRUE}
+zad1_results$J_inv - zad1_results$estimated_cov
+```
+
+Sprawdzimy jeszcze względny błąd oszacowania wyrazów na przekątnej:
+```{r echo=TRUE}
+mean((diag(zad1_results$J_inv) - diag(zad1_results$estimated_cov))/diag(zad1_results$J_inv))
+```
+
+## Zadanie 2 - zmniejszona liczba obserwacji
+Powtarzamy doświadczenie z macierzą planu przyciętą do pierwszych 100 z 400 wierszy.
+
+```{r zad2_get_results}
+n = 100
+p = 3
+zad2_results = get_simulation_results(n,p, Sigma = diag(1/100, p, p))
+```
+
+Macierz $J^{-1}$ wyznaczona w tym zadaniu jest postaci:
+
+```{r}
+zad2_results$J_inv
+```
+
+Można zauważyć wzrost wartości na przekątnej. Intuicyjnie ma to sens, bo dysponując mniejszą liczbą obserwacji oszacujemy parametry mniej dokładnie, a więc ich wariancja wzrośnie.
+
+```{r zad2_histograms, fig.width = 8.5, fig.height = 4}
+top = textGrob("Zadanie 2: Histogramy estymatorów z naniesioną gęstością teoretyczną", gp = gpar(fontface = 1, fontsize = 12, just = "top"))
+grid.arrange(grobs = zad2_results$plots, ncol = 3, top = top)
+```
+
+Można zauważyć, że estymatory są szerzej rozrzucone wokół średnich (wzrost wariancji). Rozkłady ponownie wyglądają na zgodne z asymptotycznymi.
+
+```{r echo=TRUE}
+zad2_results$biases
+```
+
+Obserwujemy wzrost obciążenia, co w przypadku 5000 replikacji eksperymentu nie wydaje się przypadkowe. 
+
+```{r echo=TRUE}
+zad2_results$J_inv - zad1_results$estimated_cov
+```
+
+Różnica pomiędzy teoretyczną asymptotyczną a empirycznie wyznaczoną macierzą kowariancji również wzrosła, choć nie bardzo znacząco.
+
+```{r echo=TRUE}
+mean((diag(zad2_results$J_inv) - diag(zad2_results$estimated_cov))/diag(zad2_results$J_inv))
+```
+
+## Zadanie 3 - zależne zmienne objaśniające
+Powtarzamy eksperyment z $n = 400$, ale tym razem zmienne $X_i$ są zależne a kowariancja pomiędzy dwoma różnymi z nich wynosi 0.3.
+
+```{r zad3_get_results}
+n = 400
+p = 3
+S_zad3 = matrix(0.3, p, p)
+diag(S_zad3) = 1
+zad3_results = get_simulation_results(n,p, Sigma = S_zad3/n)
+```
+```{r, echo = TRUE}
+zad3_results$J_inv
+```
+
+Obserwujemy ponownie wzrost wariancji względem zadania 1 oraz dodatkowo większy niż w zadaniu 2 wzrost wartości wyrazów na przekątnej. Poniżej widać, że rozkłady są zgodne z teoretycznymi:
+
+```{r zad3_histograms, fig.width = 8.5, fig.height = 4}
+top = textGrob("Zadanie 3: Histogramy estymatorów z naniesioną gęstością teoretyczną", gp = gpar(fontface = 1, fontsize = 12, just = "top"))
+grid.arrange(grobs = zad3_results$plots, ncol = 3, top = top)
+```
+
+```{r, echo = TRUE}
+zad3_results$biases
+```
+
+Obciążenia są zbliżone do tych z zadania 2.
+
+```{r echo=TRUE}
+zad3_results$J_inv - zad1_results$estimated_cov
+```
+
+```{r echo=TRUE}
+mean((diag(zad3_results$J_inv) - diag(zad3_results$estimated_cov))/diag(zad3_results$J_inv))
+```
+Największą różnicę względem zadań 1 i 2 widzimy w przypadku różnicy pomiędzy teoretyczną a empiryczną macierzą kowariancji estymatorów, aczkolwiek po sprawdzeniu błędu względnego okazuje się on bardzo mały.
+
+## Zadanie 4 - więcej parametrów
+Rozważamy ponownie niezależne kolumny X. Do macierzy planu użytej w zadaniu 1 dołączamy dodatkowo kolumny $X_4, ... X_{20}$ i budujemy model z użyciem wektora $\beta = (3,3,3,...3) \in R^{20}$.
+
+```{r zad4_get_results}
+n = 400
+p = 20
+zad4_results = get_simulation_results(n, p, Sigma = diag(1/400, p, p))
+```
+
+Macierz $J^{-1}$ w tym przypadku jest $20 \times 20$, więc wyświetlimy tylko wyrazy na jej przekątnej.
+
+```{r, echo = TRUE}
+diag(zad4_results$J_inv)
+```
+
+```{r zad4_histograms, fig.width = 10, fig.height = 10}
+top = textGrob("Zadanie 4: Histogramy estymatorów z naniesioną gęstością teoretyczną", gp = gpar(fontface = 1, fontsize = 12, just = "top"))
+grid.arrange(grobs = zad4_results$plots, ncol = 4, top = top)
+```
+
+Obserwowane wariancje estymatorów nie różnią się znacząco od wyników w poprzednich zadaniach, a rozkłady ponownie wyglądają na zgodne z asymptotycznymi. Uzyskane obciążenia przypominają te z zadań 2 i 3:
+
+```{r, echo = TRUE}
+zad4_results$biases
+```
+
+Sprawdzimy jeszcze błąd względny wyrazów w macierzy kowariancji uśredniony dla całej macierzy:
+```{r echo=TRUE}
+mean((diag(zad4_results$J_inv) - diag(zad4_results$estimated_cov))/diag(zad4_results$J_inv))
+```
+
+## Zadanie 5 - podsumowanie
+Wyniki symulacji były we wszystkich przypadkach zgodne z teorią.

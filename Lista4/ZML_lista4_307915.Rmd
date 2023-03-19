@@ -1,0 +1,686 @@
+---
+title: "Zaawansowane Modele Liniowe - Lista 4"
+output:
+  pdf_document:
+    dev: cairo_pdf
+  html_document:
+    df_print: paged
+subtitle: Pomiary wielokrotne; ogólny model liniowy
+header-includes: \usepackage{amsmath}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, message = FALSE, warning = FALSE, cache = TRUE,
+  fig.width = 5, fig.height = 3, fig.align="center")
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(gridExtra)
+library(grid)
+library(nlme)
+library(MASS)
+
+set.seed(0)
+theme_fs = function(fontsize){theme(text = element_text(size = fontsize))}
+
+# Helpers 
+write_matex2 <- function(x, digits) {
+  begin <- "\\begin{bmatrix}"
+  end <- "\\end{bmatrix}"
+  X <-
+    apply(round(x,digits), 1, function(x) {
+      paste(
+        paste(x, collapse = "&"),
+        "\\\\"
+      )
+    })
+  paste(c(begin, X, end), collapse = "")
+}
+```
+
+# Wstęp
+W uogólnionych modelach liniowych zakładaliśmy, że zmienne wynikowe $y_1, ... y_n$ nie są ze sobą w żaden sposób skorelowane. Takie założenie traci sens, gdy analizujemy dane w których różne obserwacje pochodzą od tych samych obiektów badanych w kilku punktach czasu. Do modelowania tego typu danych posłużymy się *ogólnym modelem liniowym*. Zakładamy, że zmienne wynikowe możemy zapisać w macierzy $n \times k$, gdzie $y_{i,j}$ oznacza wynik obserwacji $i$- tego obiektu w $j$-tym momencie. Z każdą obserwacją $y_{i,j}$ związany jest wektor zmiennych objaśniających $X^{(i,j)} \in R^{p-1}$ tak, że 
+$$y_{i,j} = \beta_0 + X^{(i,j)}_1 \cdot \beta_1 + ... + X^{(i,j)}_{p-1} \cdot \beta_{p-1} + \epsilon_{i,j},$$
+
+gdzie $\epsilon_{i,j} \sim N(0, \sigma^2_{i,j})$. Ponadto zakładamy, że nie ma korelacji pomiędzy błędami losowymi stowarzyszonymi z różnymi obiektami ($i \neq k \implies cor(\epsilon_{i,j},\epsilon_{k,l}) = 0$), ale istnieje pewna struktura korelacji pomiędzy kolejnymi pomiarami dla tego samego obiektu. Jeśli przez $\epsilon_i$ oznaczymy wektor błędów losowych związanych z wierszem $y_i$, to można zapisać że $\forall _{i \in \{1,...n\}} cov(\epsilon_i) = \Sigma$ ($\Sigma$ jest macierzą symetryczną $k \times k$). Oznacza to, że macierze kowariancji pomiędzy pomiarami w różnych momentach są takie same dla wszystkich obiektów (uogólnienie założenia o stałości wariancji). Możemy estymować macierz $\Sigma$ i wektor współczynników $\beta$ oraz testować hipotezy dotyczące estymatorów. Estymator wektora parametrów $\beta$ jest wektorem losowym o **asymptotycznym rozkładzie** normalnym o wartości oczekiwanej $\beta$ i macierzy kowariancji
+
+$$cov(\hat \beta) = \left(\sum_{i=1}^n X^T_i\Sigma^{-1}X_i \right)^{-1}.$$
+
+Estymator dany jest jawnym wzorem
+
+$$\hat \beta = \left(cov (\hat \beta) \right)^{-1}\left(\sum_{i=1}^n X^T_i\Sigma^{-1}Y_i \right).$$
+
+W przypadku, gdy nie znamy prawdziwych parametrów możemy szacować macierz kowariancji $cov(\hat \beta)$ podstawiając w miejsce macierzy $\Sigma$ jej estymator, którego obliczenie może odbyć się za pomocą różnych narzędzi. Będziemy rozważać estymator ML (metoda Maximum Likelihood) oraz REML (Restricted Maximum Likelihood) wprowadzący pewną poprawkę do metody ML i wygrywający z nią w przypadku małej liczby obserwacji. Nie podajemy tutaj postaci estymatorów $\hat \Sigma$, skorzystamy z zaimplementowanych w R metod.
+
+W ramach raportu dopasujemy modele do wygenerowanych symulacyjnie danych i zbadamy własności uzyskanych estymatorów porównując je z teorią. Do modelowania zastosujemy funkcję `gls` z biblioteki `nmle`.
+
+# Zadanie 1
+Generujemy dane zgodnie z założeniami ogólnego modelu liniowego z $n = 20, k = 3, p = 4, \beta = (3,3,0)^T$ i macierzą $\Sigma$ taką, że wyrazy na przekątnej są równe i wynoszą $\gamma^2 = 4$ (są to wariancje obserwacji w poszczególnych tygodniach), a poza nią $\gamma^2 \rho = 4 \cdot 0.3 = 1.2$ (korelacje pomiędzy dowolnymi dwoma momentami pomiaru są takie same). Dopasowując później model zadamy mu właśnie taką strukturę macierzy kowariancji podając odpowiednie argumenty do funkcji `gls`, tzn. `correlation = corCompSymm(form = ~1|id)` i `weights = varIdent(form = ~1)`).
+
+```{r define_functions}
+# Norma supremum
+sup_norm = function(a,b){max(abs(a-b))}
+
+# Zamienia dane na format 1-wymiarowy
+convert_to_1d = function(Xs_lst, ys_lst){
+  p = ncol(Xs_lst[[1]])
+  n = length(ys_lst)                    # == length(Xs_lst)
+  k = length(ys_lst[[1]])               # liczba pomiarów dla obiektu
+  dtf_subparts_n = vector("list", n)
+  for (i in 1:n){
+    dtf_subparts_n[[i]] = data.frame(
+      y = ys_lst[[i]],
+      id = i,         # k x 1
+      t = 1:k      # k x 1
+    ) %>% cbind(Xs_lst[[i]][,-c(1)])
+  }
+  
+  data_1dim = do.call(rbind, dtf_subparts_n)
+  colnames(data_1dim)[4:ncol(data_1dim)] = paste("X", 1:(p-1), sep = "")
+  return(data_1dim)
+}
+
+# Estymuje samą kowariancję beta
+estimate_beta_covariance = function(X_lst, est_covY, add_intercept = FALSE){
+  n = length(X_lst)
+  sum_left = 0
+  Sig_inv = solve(est_covY)
+  for (i in 1:n){
+    Xi = X_lst[[i]]
+    if (add_intercept){Xi = cbind(1, Xi)}
+    XT_S = t(Xi) %*% Sig_inv
+    sum_left = sum_left + XT_S %*% Xi
+  }
+  return(solve(sum_left))
+}
+
+# Funkcja estymuje wektor beta i jego kowariancję na podstawie wykładu.
+estimate_beta_with_cov = function(X_lst, Y_lst, est_covY, add_intercept = FALSE){
+  n = length(X_lst)
+  sum_left = 0
+  sum_right = 0
+  Sig_inv = solve(est_covY)
+  for (i in 1:n){
+    Xi = X_lst[[i]]
+    if (add_intercept){Xi = cbind(1, Xi)}
+    Yi = Y_lst[[i]]
+    XT_S = t(Xi) %*% Sig_inv
+    sum_left = sum_left + XT_S %*% Xi
+    sum_right = sum_right + XT_S %*% Yi
+  }
+  return(list(
+  beta_est = solve(sum_left) %*% sum_right %>% t(),
+  cov_beta_est = solve(sum_left)
+  ))
+}
+
+# Korzystając ze zdefiniowanych wyżej funkcji przeprowadza eksperymenty i zwraca wyniki wraz z uzytymi parametrami (lista).
+generate_results = function(n, k, p, method, ro = 0.3, gamma = 2, reps = 1){
+  # Generate X with Intercept ones, beta has 0 coef at begin. ------
+  N = n*k
+  X = matrix(rnorm(N*(p-1), 0, 1/sqrt(N)), N, p-1) 
+  X = cbind(1, X) # Intercept column
+  Xs_lst = vector("list", n)
+  for (i in 1:(n)){
+    start = (i-1)*k + 1
+    stop = start + k - 1
+    subX = X[start:stop,]
+    Xs_lst[[i]] = subX
+  }
+  # Generate covariance matrix for data -------
+  true_beta = rep.int(0,p)
+  true_beta[c(2,3)] = 3
+  true_beta = t(as.numeric(true_beta))
+  Sigma = matrix(ro, k, k)
+  diag(Sigma) = 1
+  Sigma = Sigma * gamma^2
+  # Generate multiple repetitions ---
+  single_rep_results_lst = vector("list", reps)
+  for (rep in 1:reps){
+    ys_lst = vector("list", n)
+    for (i in 1:n){
+      yi = mvrnorm(1, Xs_lst[[i]] %*% t(true_beta), Sigma)
+      ys_lst[[i]] = yi
+      }
+    # Fit model with intercept ------
+    data_1dim = convert_to_1d(Xs_lst, ys_lst)
+    model = gls(
+      y ~ . - id - t, data = data_1dim,
+      correlation = corCompSymm(form = ~1|id),
+      weights = varIdent(form = ~1),
+      method = method)
+  
+    # Estimate Sigma and betas -----
+    covY_model = getVarCov(model) %>% as.numeric() %>% matrix(k)
+    beta_est_model = model$coefficients %>% as.numeric()
+    cov_beta_est_model = vcov(model)
+    temp = estimate_beta_with_cov(Xs_lst, ys_lst, covY_model)
+    cov_beta_est = temp$cov_beta_est
+    beta_est = temp$beta_est
+    # Extract rho and gamma ----
+    corY_model = cov2cor(covY_model)
+    gamma_est_model = sqrt(covY_model[1,1]) # wszystkie takie same na diagonali
+    ro_est_model = corY_model[1,2] # takie same
+    # Return results ------
+    single_results_lst = list(
+      ys_lst = ys_lst,
+      model = model,
+      covY_model = covY_model,
+      beta_est_model = beta_est_model,
+      cov_beta_est_model = cov_beta_est_model,
+      abs_diff_beta_est = sup_norm(beta_est, beta_est_model),
+      abs_diff_cov_beta_est = sup_norm(cov_beta_est, cov_beta_est_model),
+      gamma_est_model = gamma_est_model,
+      ro_est_model = ro_est_model
+    )
+    # Append results of this repetition to the list
+    single_rep_results_lst[[rep]] = single_results_lst
+    }
+  # Return gathered results, some of them fixed among reps, some differ
+  return(list(
+    used_params = list(n=n, k=k, p=p, met=method, ro=ro, gamma=gamma),
+    true_beta = true_beta,
+    Sigma = Sigma,
+    asymptotic_cov_beta = estimate_beta_covariance(Xs_lst, Sigma),
+    Xs_lst = Xs_lst,
+    repetitions = single_rep_results_lst
+    ))
+}
+
+# Przygotowuje pojedynczy wykres w zadaniu 2
+plot_beta_hist = function(results, i){
+  # Extract info from results
+  model_beta_i_vec = sapply(results$repetitions,function(rep){rep$beta_est_model[i+1]})
+  asymp_mean = results$true_beta[i+1]
+  asymp_beta_std = sqrt(diag(results$asymptotic_cov_beta)[i+1])
+  # Make plot
+  df = data_frame(b = model_beta_i_vec)
+  p = ggplot(df, aes(b)) +
+  geom_histogram(
+    aes(y = ..density..), fill = I("white"), col = I("black"), bins = 40) +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = asymp_mean, sd = asymp_beta_std),
+    lwd = 0.7, 
+    col = 'darkgreen'
+    ) +
+  labs(
+    x = "", y = "",
+    title = paste("Histogram emiprycznej gęstości estymatora beta", i, sep = ""),
+    subtitle = "Dorysowana linia asymptotycznej gęstości"
+  ) + 
+    theme_fs(15)
+  return(p)
+  }
+
+# Przygotowuje figure do zadania 2
+plots_beta = function(results){
+  p1 = plot_beta_hist(results, 0)
+  p2 = plot_beta_hist(results, 1)
+  return(arrangeGrob(p1, p2, ncol = 2))
+}
+
+# Przygotowuje figure do zadania 2
+plots_sigma = function(results){
+  # Extract info from results
+  gammas = sapply(results$repetitions, function(rep){rep$gamma_est_model})
+  ros = sapply(results$repetitions, function(rep){rep$ro_est_model})
+  true_gamma = results$used_params$gamma
+  true_ro = results$used_params$ro
+  # Make plot gammas
+  df = data_frame(x = gammas)
+  p1 = ggplot(df, aes(x)) +
+    geom_histogram(aes(y = ..density..), fill = I("white"), col = I("black"), bins = 40) +
+    geom_vline(xintercept = true_gamma, col = I("red"), lwd = 2) +
+    labs(x = "", y = "", title = "Histogram emiprycznej gęstości estymatora gamma",
+         subtitle = "Linią zaznaczona prawdziwa wartość parametru") +
+    theme_fs(15)
+  
+  df2 = data_frame(x = ros)
+  p2 = ggplot(df2, aes(x)) +
+    geom_histogram(aes(y = ..density..), fill = I("white"), col = I("black"), bins = 40) +
+    geom_vline(xintercept = true_ro, col = I("red"), lwd = 2) +
+    labs(x = "", y = "", title = "Histogram emiprycznej gęstości estymatora ro", 
+         subtitle = "Linią zaznaczona prawdziwa wartość parametru") +
+    
+    theme_fs(15)
+  # Return both
+  return(list(gamma_plot = p1, ro_plot = p2))
+  }
+
+# Przygotowuje wykresy i tabele jak w zadaniu 2
+prepare_visu_results = function(results){
+  # Histogramy beta ------
+  beta_0_hist = plot_beta_hist(results, 0)
+  beta_1_hist = plot_beta_hist(results, 1)
+  
+  # Wartości średniej i std. do porównania ------
+  b0_v = sapply(results$repetitions, function(rep){rep$beta_est_model[1]}) 
+  b1_v = sapply(results$repetitions, function(rep){rep$beta_est_model[2]})
+  
+  # Tabela dla beta ------
+  bias_beta_dtf = sapply(
+    results$repetitions, 
+    function(rep){rep$beta_est_model - results$true_beta}) %>% t()
+  
+  summary_beta = data.frame(
+    "obciazenie" = colMeans(bias_beta_dtf), # obciążenia
+    "norma_supremum_bledu" = sapply(
+      data.frame(bias_beta_dtf), 
+      function(x){max(abs(x))}
+      )
+    ) %>% t()
+  
+  max_beta = ncol(summary_beta) - 1
+  colnames(summary_beta) = paste("beta", 0:max_beta, sep = "")
+  
+  # Plots sigma -----
+  temp = plots_sigma(results)
+  gamma_hist = temp$gamma_plot
+  ro_hist = temp$ro_plot
+  
+  # Tabela dla sigma + wartości ------
+  bias_gam= sapply(results$repetitions, 
+                   function(rep){rep$gamma_est_model - results$used_params$gamma})
+  bias_ro = sapply(results$repetitions, 
+                   function(rep){rep$ro_est_model - results$used_params$ro})
+  
+  summary_sigma = data.frame(
+    obciazenie = c(mean(bias_gam), mean(bias_ro)),
+    norma_supremum_bledu = c(sup_norm(bias_gam,0), sup_norm(bias_ro,0))
+    ) %>% t()
+  
+  colnames(summary_sigma) = c("gamma", "ro")
+  # Return ----
+  return(list(
+    beta_0_hist = beta_0_hist,
+    beta_1_hist = beta_1_hist,
+    b0_v = b0_v,
+    b1_v = b1_v,
+    beta_summary_table = summary_beta,
+    sigma_summary_table = summary_sigma,
+    ro_hist = ro_hist,
+    gamma_hist = gamma_hist,
+    ro_v = sapply(results$repetitions, function(rep){rep$ro_est_model}),
+    gamma_v = sapply(results$repetitions, function(rep){rep$gamma_est_model})
+  ))
+}
+```
+
+```{r zad1_generate_results_and_show_data}
+# results_zad1 = generate_results(20,3,4,"REML",0.3,2)
+# save(results_zad1, file = "results_zad1.Rmd")
+load("results_zad1.Rmd")
+
+data_1dim_zad1 = convert_to_1d(
+  results_zad1$Xs_lst, 
+  results_zad1$repetitions[[1]]$ys_lst)
+
+head(data_1dim_zad1, 6) %>% knitr::kable(caption = "Pierwsze 6 wierszy danych (macierz 60 x 6)", digits = 3, booktabs = T, format = "pandoc")
+```
+
+Wykres poniżej (`pairs`) przedstawia korelacje pomiędzy czasami 1, 2 i 3 (widać, że są one takie same dla wszystkich czasów):
+
+```{r zad0_pairs, fig.width= 4}
+y_dtf_wide = data.frame(
+  y1 = data_1dim_zad1$y[which(data_1dim_zad1$t == 1)],
+  y2 = data_1dim_zad1$y[which(data_1dim_zad1$t == 1)],
+  y3 = data_1dim_zad1$y[which(data_1dim_zad1$t == 1)]
+)
+
+pairs(y_dtf_wide)
+```
+
+Dopasowujemy model z Interceptem. W ramach zadania 1 porównujemy estymatory zwrócone przez model z wartościami obliczonymi na podstawie wzorów z wykładu ($\hat \beta, cov(\hat \beta)$) oraz z prawdziwymi wartościami ($\hat \gamma, \hat\rho$).
+
+```{r zad1_results}
+zad1_table = data.frame(
+  beta = results_zad1$repetitions[[1]]$abs_diff_beta_est,
+  cov_beta = results_zad1$repetitions[[1]]$abs_diff_cov_beta_est,
+  gamma = sup_norm(
+    results_zad1$used_params$gamma, results_zad1$repetitions[[1]]$gamma_est_model),
+  ro = sup_norm(
+    results_zad1$used_params$ro, results_zad1$repetitions[[1]]$ro_est_model)
+)
+
+colnames(zad1_table) = c(
+  "max(|beta_model - beta_wzory|)",
+  "max(|cov_beta_model - cov_beta_wzory|)",
+  "|gamma_true - gamma_model|",
+  "|rho_true - rho_model|"
+)
+
+knitr::kable(t(zad1_table), caption = "Zadanie 1, wyniki do 5 miejsca po przecinku", digits = 5, booktabs = T, format = "pandoc")  
+```
+
+**Komentarz:** 
+
+- estymatory $\hat \beta$ i $cov(\hat \beta)$ wyznaczone przez funkcję `gls` są zgodne z teorią z wykładu (drobne różnice mogą wynikać z ograniczeń dokładności komputerów).
+- estymatory $\gamma$ i $\rho$ wyznaczone przez model są zbliżone do prawdziwych wartości. Więcej na ten temat można powiedzieć w kolejnych zadaniach, przy większej ilości powtórzeń eksperymentu.
+
+
+# Zadanie 2
+```{r zad2_6_generate_results}
+# results_zad2 = generate_results(20,3,4,"REML",0.3,2, reps = 500)
+# save(results_zad2, file = "results_zad2.Rmd")
+load("results_zad2.Rmd")
+```
+
+Powtórzymy 500-krotnie eksperyment z zadania 1 w celu zbadania asymptotycznych własności estymatorów. Macierz kowariancji współczynników **wyliczona w oparciu o wartości $\beta, \Sigma$ i macierz planu użyte do generowania danych** jest postaci 
+
+$$
+cov(\hat \beta) = `r write_matex2(results_zad2$asymptotic_cov_beta, 2)`
+$$
+
+a odchylenia standardowe współczynników to odpowiednio: 
+$`r paste(round(sqrt(diag(results_zad2$asymptotic_cov_beta)), 2), sep = "", collapse = ", ")`.$ 
+Można zauważyć, że $\hat \beta_2$ ma znacząco większą wariancję niż pozostałe estymatory, jednak pewnie jest to kwestia tego jaka postać macierzy $X$ została wylosowana do generowania danych. 
+
+## Estymatory $\hat \beta$
+Wykresy poniżej przedstawiają histogramy gęstości estymatorów $\hat \beta_0$ i $\hat \beta_1$ uzyskanych w 500 replikacjach eksperymentu wraz z dorysowanymi **teoretycznymi** gęstościami obliczonymi na podstawie wzorów z wykładu z użyciem prawdziwej macierzy $\Sigma$. (Wykresy z zadań 2-6 zostały dodatkowo zebrane w jednym miejscu na końcu dokumentu.)
+
+```{r zad2_beta, fig.width = 15, fig.height = 5}
+visu_zad2 = prepare_visu_results(results_zad2)
+grid.arrange(visu_zad2$beta_0_hist, visu_zad2$beta_1_hist, ncol = 2, top = textGrob("Histogramy estymatorow beta, zad.2", gp=gpar(fontsize=20)))
+```
+
+Tabela poniżej zawiera wyestymowane obciążenia i normy supremum błędu oszacowania współczynników, gdzie przez błąd oszacowania w $i$-tej iteracji rozumiemy różnicę $\hat \beta_i - \beta_i$, a obciążenie obliczamy jako wartość oczekiwaną powyższej różnicy, uśredniając wyniki.
+
+```{r zad2_beta_bias_sup, echo=FALSE}
+visu_zad2$beta_summary_table %>% knitr::kable(caption = "Obciążenia i norma supremum błędu estymatorów, zad. 2", digits = 3, booktabs = T, format = "pandoc")
+```
+
+
+**Komentarz:** 
+
+- Średnie wartości $\hat \beta_0, \hat \beta_1$ wynoszą odpowiednio około $0$ i $3$, a odchylenia standardowe 
+$`r paste(round(sd(visu_zad2$b0_v), 2), round(sd(visu_zad2$b1_v), 2), sep = ", ")`$. 
+Wartości te są blisko teoretycznych, a wygląd wykresów potwierdza zgodność asymptotycznych rozkładów z teoretycznymi.
+- Obciążenia dla estymatorów są bardzo małe, przy czym można zauważyć że dla 500 replikacji różnica pomiędzy prawdziwą wartością a estymatorem jest wciąż widoczna dla $\hat \beta_1, \hat \beta_2, \hat \beta_3$, podczas gdy dla $\hat \beta_0$ jest ona już bliska 0. Ma to intuicyjnie sens, gdyż odchylenie standardowe $\hat \beta_0$ jest znacznie mniejsze niż dla pozostałych współczynników i można spodziewać się, że średnia szybciej stabilizuje się wokół prawdziwej wartości. W celu potwierdzenia tego wykonałam dodatkowo eksperyment z liczbą powtórzeń równą 3000. 
+
+```{r zad2_extra_iterations}
+# results_zad2_3000rep = generate_results(20,3,4,"REML",0.3,2, reps = 3000)
+# save(results_zad2_3000rep, file = "results_zad2_3000rep.Rmd")
+load("results_zad2_3000rep.Rmd")
+
+visu_zad2_3000rep = prepare_visu_results(results_zad2_3000rep)
+```
+
+```{r zad2_3000reps_beta_table}
+visu_zad2_3000rep$beta_summary_table %>% knitr::kable(caption = "Obciążenia i norma supremum błędu estymatorów, zad. 2\nDodatkowe wyniki dla 3000 powtórzeń.", digits = 3, booktabs = T, format = "pandoc")
+```
+
+Widać, że obciążenia innych estymatorów zmalały. Można spodziewać się, że wraz ze wzrostem liczby powtórzeń będą one coraz bliższe 0. Dodatkowo można zaobserwować, że zwiększyły się normy supremum błędu, co wynika z faktu że przy większej ilości prób zwiększamy szanse na wylosowanie bardzo skrajnej wartości. Podobnie, współczynnik o największym błędzie i obciążeniu to $\hat \beta_2$, czyli ten o największej wariancji.
+
+## Estymatory $\hat \gamma, \hat \rho$
+W tej części zbadamy parametry wpływające na postać macierzy $\Sigma$.
+
+```{r zad2_sigma_plots, fig.width = 15, fig.height = 5}
+grid.arrange(visu_zad2$gamma_hist, visu_zad2$ro_hist, ncol = 2, 
+             top = textGrob("Histogramy estymatorow gamma i ro, zad.2", gp=gpar(fontsize=20)))
+```
+
+```{r zad2_sigma_bias, echo=FALSE}
+visu_zad2$sigma_summary_table %>% knitr::kable(caption = "Obciążenia i norma supremum estymatorów, zad.2", digits = 3, booktabs = T, format = "pandoc")
+```
+
+**Komenatrz:** 
+
+- Uzyskane obciążenia dla obu estymatorów są bardzo małe, tak samo jak normy supremum błędu. Oznacza to, że model dobrze szacuje te parametry.
+- Wykresy w przybliżeniu przypominają rozkład normalny (lekko skośny dla estymatora $\hat \rho$). Możemy wykorzystać wygenerowane wyniki dla 3000 replikacji w celu dokładniejszego ocenienia rozkładów.
+
+```{r zad2_sigma_plots_extra_it, fig.width = 15, fig.height = 5}
+grid.arrange(visu_zad2_3000rep$gamma_hist, visu_zad2_3000rep$ro_hist, ncol = 2, 
+             top = textGrob("Histogramy estymatorow gamma i ro, zad.2 (3000 replikacji)", gp=gpar(fontsize=20)))
+```
+
+
+Widać, że wykresy bardziej przypominają rozkład normalny skupiony wokół prawdziwych wartości parametrów. Pozwala to przypuszczać, że ich rozkłady są asymptotycznie normalne. Sprawdziłam również, jak zmienia się **odchylenie standardowe** estymatorów. W przypadku 500 replikacji dla $\hat \gamma, \hat \rho$ jest to odpowiednio:
+$`r paste(round(sd(visu_zad2$gamma_v), 2), round(sd(visu_zad2$ro_v), 2), sep = ", ")`$,
+a w przypadku 3000 replikacji: 
+$`r paste(round(sd(visu_zad2_3000rep$gamma_v), 2), round(sd(visu_zad2_3000rep$ro_v), 2), sep = ", ")`$, czyli można spodziewać się że wartości te stabilizują się wokół około 0.21 i 0.15.
+
+# Zadanie 3 (wzrasta liczba obserwacji, n = 500)
+```{r zad3_generate}
+# results_zad3 = generate_results(500,3,4,"REML",0.3,2, reps = 500)
+# save(results_zad3, file = "results_zad3.Rmd")
+load("results_zad3.Rmd")
+visu_zad3 = prepare_visu_results(results_zad3)
+```
+
+Macierz kowariancji współczynników wyliczona w oparciu o wartości $\beta, \Sigma$ i macierz planu użyte do generowania danych w tym zadaniu jest postaci 
+
+$$
+cov(\hat \beta) = `r write_matex2(results_zad3$asymptotic_cov_beta, 2)`
+$$
+
+a odchylenia standardowe współczynników to odpowiednio: $`r paste(round(sqrt(diag(results_zad3$asymptotic_cov_beta)), 2), sep = "", collapse = ", ")`$. Są one bardziej zbliżone niż w zadaniu 2 - większa ilość danych zmniejszyła wpływ losowości w generowaniu macierzy planu. 
+
+## Estymatory $\hat \beta$
+```{r zad3_beta, fig.width = 15, fig.height = 5}
+grid.arrange(visu_zad3$beta_0_hist, visu_zad2$beta_1_hist, ncol = 2, top = textGrob("Histogramy estymatorow beta, zad.3", gp=gpar(fontsize=20)))
+```
+
+```{r zad3_beta_bias_sup, echo=FALSE}
+visu_zad3$beta_summary_table %>% knitr::kable(caption = "Obciążenia i norma supremum błędu estymatorów, zad. 3", digits = 3, booktabs = T, format = "pandoc")
+```
+
+**Komenatarz: ** 
+
+- Wygląd wykresów jest na pierwszy rzut oka podobny, jednak zmieniła się skala na osi OX (można łatwo zauważyć to na porównaniu wykresów na końcu raportu.) Wzrost liczby obserwacji zmniejsza odchylenie standardowe estymatorów.
+- Obciążenia ponownie są małe, w tym prawie zerowe dla $\hat \beta_0$. 
+- W porównaniu do zadania 2 obciążenia estymatorów $\hat \beta_1, \hat \beta_3$ zmalały, ale obciążenie estymatora $\hat \beta_2$ wzrosło. Można podejrzewać, że wzrost obciążenia wynika z losowości. W celu sprawdzenia tego oraz porównania odchyleń standardowych generujemy wyniki dla większej (3000) liczby powtórzeń.
+
+```{r zad3_extra_iterations}
+# results_zad3_3000rep = generate_results(500,3,4,"REML",0.3,2, reps = 3000)
+# save(results_zad3_3000rep, file = "results_zad3_3000rep.Rmd")
+load("results_zad3_3000rep.Rmd")
+
+visu_zad3_3000rep = prepare_visu_results(results_zad3_3000rep)
+```
+
+```{r zad3_3000reps_beta_table}
+visu_zad3_3000rep$beta_summary_table %>% knitr::kable(caption = "Obciążenia i norma supremum błędu estymatorów, zad. 3\nDodatkowe wyniki dla 3000 powtórzeń.", digits = 3, booktabs = T, format = "pandoc")
+```
+
+Okazuje się, że nie widać znaczących różnic w obciążeniach estymatorów uzyskanych dla małej i dużej próby.
+
+## Estymatory $\hat \gamma, \hat \rho$
+```{r zad3_sigma_plots, fig.width = 15, fig.height = 5}
+grid.arrange(visu_zad3$gamma_hist, visu_zad3$ro_hist, ncol = 2, 
+             top = textGrob("Histogramy estymatorow gamma i ro, zad.3", gp=gpar(fontsize=20)))
+```
+
+```{r zad3_sigma_bias, echo=FALSE}
+visu_zad3$sigma_summary_table %>% knitr::kable(caption = "Obciążenia i norma supremum estymatorów, zad.3", digits = 3, booktabs = T, format = "pandoc")
+```
+
+**Komentarz:** Liczba obserwacji wydaje się mieć wpływ na estymację $\Sigma$ - histogramy już dla 500 replikacji wyglądają bardziej normalnie dla $n = 500$ niż dla $n = 20$. Widać też znaczący spadek odchyleń standardowych estymatorów. Poniżej dodatkowe wykresy dla 3000 replikacji:
+
+```{r zad3_sigma_plots_extra_it, fig.width = 15, fig.height = 5}
+grid.arrange(visu_zad3_3000rep$gamma_hist, visu_zad3_3000rep$ro_hist, ncol = 2, 
+             top = textGrob("Histogramy estymatorow gamma i ro, zad.3 (3000 replikacji)", gp=gpar(fontsize=20)))
+```
+
+Wykresy dla $n = 500$ zdają się być bardziej skupione wokół średnich - obserwacje tę potwierdza zbadanie odchyleń standardowych: w przypadku 500 replikacji dla $\hat \gamma, \hat \rho$ jest to odpowiednio:
+$`r paste(round(sd(visu_zad2$gamma_v), 2), round(sd(visu_zad2$ro_v), 2), sep = ", ")`$,
+a w przypadku 3000 replikacji: 
+$`r paste(round(sd(visu_zad3_3000rep$gamma_v), 2), round(sd(visu_zad3_3000rep$ro_v), 2), sep = ", ")`$. Odchylenia dla $n = 500$ stabilizują się na niższym poziomie niż dla małej próby.
+
+# Zadanie 4 (wzrasta liczba pomiarów, k = 30)
+```{r zad4_generate}
+# results_zad4 = generate_results(20,30,4,"REML",0.3,2, reps = 500)
+# save(results_zad4, file = "results_zad4.Rmd")
+load("results_zad4.Rmd")
+visu_zad4 = prepare_visu_results(results_zad4)
+```
+
+Macierz kowariancji współczynników wyliczona w oparciu o wartości $\beta, \Sigma$ i macierz planu użyte do generowania danych w tym zadaniu jest postaci 
+
+$$
+cov(\hat \beta) = `r write_matex2(results_zad4$asymptotic_cov_beta, 2)`
+$$
+
+a odchylenia standardowe współczynników to odpowiednio: $`r paste(round(sqrt(diag(results_zad4$asymptotic_cov_beta)), 2), sep = "", collapse = ", ")`$.
+
+## Estymatory $\hat \beta$
+```{r zad4_beta, fig.width = 15, fig.height = 5}
+grid.arrange(visu_zad4$beta_0_hist, visu_zad4$beta_1_hist, ncol = 2, 
+             top = textGrob("Histogramy estymatorow beta, zad.4", gp=gpar(fontsize=20)))
+```
+
+```{r zad4_beta_bias_sup, echo=FALSE}
+visu_zad4$beta_summary_table %>% knitr::kable(caption = "Obciążenia i norma supremum błędu estymatorów, zad. 4", digits = 3, booktabs = T, format = "pandoc")
+```
+
+Wykresy ponownie wyglądają jak rozkład normalny, a obciążenia są małe. Porównałam ze sobą uzyskane w zadaniach 2-4 wykresy, tabele i wartości odchyleń standardowych z następującymi wnioskami:
+
+- choć wykresy wydają się bardziej chaotyczne niż w zadaniu 2, odchylenie standardowe estymatorów zmalało, podobnie jak obciążenie.
+- zwiększenie liczby pomiarów do $30$ również wpłynęło na zmniejszenie odchylenia standardowego estymatorów $\beta$ w mniejszym stopniu niż zwiększenie liczby obserwacji do $500$. Może to wynikać z faktu, że zmiana była mniejsza.
+
+## Estymatory $\hat \gamma, \hat \rho$
+```{r zad4_sigma_plots, fig.width = 15, fig.height = 5}
+grid.arrange(visu_zad4$gamma_hist, visu_zad4$ro_hist, ncol = 2, 
+             top = textGrob("Histogramy estymatorow gamma i ro, zad.4", gp=gpar(fontsize=20)))
+```
+
+```{r zad4_sigma_bias, echo=FALSE}
+visu_zad4$sigma_summary_table %>% knitr::kable(caption = "Obciążenia i norma supremum estymatorów, zad.4", digits = 3, booktabs = T, format = "pandoc")
+```
+
+Można zauważyć spadek wariancji estymatorów.
+
+# Zadanie 5 (wzrasta liczba kolumn macierzy planu)
+W tym zadaniu zwiększamy liczbę kolumn macierzy planu (liczba prawdziwych istotnych zmiennych nie zmienia się).
+
+```{r zad5_generate}
+# results_zad5 = generate_results(20,3,40,"REML",0.3,2, reps = 500)
+# save(results_zad5, file = "results_zad5.Rmd")
+load("results_zad5.Rmd")
+visu_zad5 = prepare_visu_results(results_zad5)
+```
+
+Macierz kowariancji $cov (\hat \beta$) jest w tym przypadku bardzo duża, więc nie została zawarta w raporcie. Odchylenia standardowe pierwszych 4 współczynników to odpowiednio: $`r paste(round(sqrt(diag(results_zad5$asymptotic_cov_beta)[1:4]), 2), sep = "", collapse = ", ")`$.
+
+## Estymatory $\hat \beta$
+```{r zad5_beta, fig.width = 15, fig.height = 5}
+grid.arrange(visu_zad5$beta_0_hist, visu_zad5$beta_1_hist, ncol = 2, 
+             top = textGrob("Histogramy estymatorow beta, zad.5", gp=gpar(fontsize=20)))
+```
+
+```{r zad5_beta_bias_sup, echo=FALSE}
+visu_zad5$beta_summary_table[1:2,1:4] %>% knitr::kable(caption = "Obciążenia i norma supremum błędu estymatorów, zad. 5\nPierwsze 4 współczynniki", digits = 3, booktabs = T, format = "pandoc")
+```
+
+**Komentarz:** Norma supremum błędu jest wyższa niż w poprzednich zadaniach. Widać również wzrost wariancji estymatorów $\hat \beta$ (na wykresach na końcu raportu widać, że takie zjawisko występuje tylko w tym zadaniu). 
+
+## Estymatory $\hat \gamma, \hat \rho$
+```{r zad5_sigma_plots, fig.width = 15, fig.height = 5}
+grid.arrange(visu_zad5$gamma_hist, visu_zad5$ro_hist, ncol = 2, 
+             top = textGrob("Histogramy estymatorow gamma i ro, zad.5", gp=gpar(fontsize=20)))
+```
+
+```{r zad5_sigma_bias, echo=FALSE}
+visu_zad5$sigma_summary_table %>% knitr::kable(caption = "Obciążenia i norma supremum estymatorów, zad.5", digits = 3, booktabs = T, format = "pandoc")
+```
+
+**Komentarz:** Tutaj również dodanie kolumn w macierzy planu wpływa negatywnie na estymację - zwiększyła się względem poprzednich zadań norma supremum błędu i wariancja estymatorów.
+
+# Zadanie 6 (zamiana metody REML na ML)
+```{r zad6_generate}
+# results_zad6 = generate_results(20,3,4,"ML",0.3,2, reps = 500)
+# save(results_zad6, file = "results_zad6.Rmd")
+load("results_zad6.Rmd")
+visu_zad6 = prepare_visu_results(results_zad6)
+```
+
+Macierz kowariancji współczynników wyliczona w oparciu o wartości $\beta, \Sigma$ i macierz planu użyte do generowania danych w tym zadaniu jest postaci 
+
+$$
+cov(\hat \beta) = `r write_matex2(results_zad6$asymptotic_cov_beta, 2)`
+$$
+
+a odchylenia standardowe współczynników to odpowiednio: $`r paste(round(sqrt(diag(results_zad6$asymptotic_cov_beta)), 2), sep = "", collapse = ", ")`$.
+
+## Estymatory $\hat \beta$
+```{r zad6_beta, fig.width = 15, fig.height = 5}
+grid.arrange(visu_zad6$beta_0_hist, visu_zad6$beta_1_hist, ncol = 2, 
+             top = textGrob("Histogramy estymatorow beta, zad.6", gp=gpar(fontsize=20)))
+```
+
+```{r zad6_beta_bias_sup, echo=FALSE}
+visu_zad6$beta_summary_table %>% knitr::kable(caption = "Obciążenia i norma supremum błędu estymatorów, zad. 6", digits = 3, booktabs = T, format = "pandoc")
+```
+
+Nie widać znaczących różnic względem zadania 2.
+
+## Estymatory $\hat \gamma, \hat \rho$
+```{r zad6_sigma_plots, fig.width = 15, fig.height = 5}
+grid.arrange(visu_zad6$gamma_hist, visu_zad6$ro_hist, ncol = 2, 
+             top = textGrob("Histogramy estymatorow gamma i ro, zad.6", gp=gpar(fontsize=20)))
+```
+
+```{r zad6_sigma_bias, echo=FALSE}
+visu_zad6$sigma_summary_table %>% knitr::kable(caption = "Obciążenia i norma supremum estymatorów, zad.6", digits = 3, booktabs = T, format = "pandoc")
+```
+
+Histogram $\gamma$ jest lekko przesunięty w lewo - potwierdza to obecny w notatkach z wykładu fakt, że dla małej próby estymator ML jest obciążony w stronę 0. Wykonałam dodatkowe symulacje z metodą ML i $n = 500$, wyniki widoczne są na wykresach poniżej (dla $n = 500$ różnica pomiędzy metodami REML i ML na oko zaniknęła).
+
+```{r zad6_n500_generate}
+# results_zad6_n500 = generate_results(500,3,4,"ML",0.3,2, reps = 500)
+# save(results_zad6_n500, file = "results_zad6_n500.Rmd")
+load("results_zad6_n500.Rmd")
+visu_zad6_n500 = prepare_visu_results(results_zad6_n500)
+```
+
+# Porównanie wyników zadań 2-6 dla 500 replikacji
+## Estymatory $\hat \beta$
+```{r gathered_beta0, fig.width = 15, fig.height = 20}
+grid.arrange(
+  visu_zad2$beta_0_hist + labs(title = "n = 20, k = 3, p = 4, REML", subtitle = "")  + xlim(-1.5, 2), 
+  visu_zad3$beta_0_hist + labs(title = "n = 500, k = 3, p = 4, REML", subtitle = "")  + xlim(-1.5, 2),
+  visu_zad4$beta_0_hist + labs(title = "n = 20, k = 30, p = 4, REML", subtitle = "")  + xlim(-1.5, 2),
+  visu_zad5$beta_0_hist + labs(title = "n = 20, k = 3, p = 40, REML", subtitle = "")  + xlim(-1.5, 2),
+  visu_zad6$beta_0_hist + labs(title = "n = 20, k = 3, p = 4, ML", subtitle = "")  + xlim(-1.5, 2),
+  visu_zad6_n500$beta_0_hist + labs(title = "n = 500, k = 3, p = 4, ML", subtitle = "")  + xlim(-1.5, 2),
+  ncol = 2, 
+  top = textGrob("Histogramy estymatorow beta0 - porównanie", gp=gpar(fontsize=20)))
+```
+
+```{r gathered_beta1, fig.width = 15, fig.height = 20}
+grid.arrange(
+  visu_zad2$beta_1_hist + labs(title = "n = 20, k = 3, p = 4, REML", subtitle = "")  + xlim(-6, 11), 
+  visu_zad3$beta_1_hist + labs(title = "n = 500, k = 3, p = 4, REML", subtitle = "")  + xlim(-6, 11),
+  visu_zad4$beta_1_hist + labs(title = "n = 20, k = 30, p = 4, REML", subtitle = "")  + xlim(-6, 11),
+  visu_zad5$beta_1_hist + labs(title = "n = 20, k = 3, p = 40, REML", subtitle = "")  + xlim(-6, 11),
+  visu_zad6$beta_1_hist + labs(title = "n = 20, k = 3, p = 4, ML", subtitle = "")  + xlim(-6, 11),
+  visu_zad6_n500$beta_1_hist + labs(title = "n = 500, k = 3, p = 4, ML", subtitle = "")  + xlim(-6, 11),
+  ncol = 2, 
+  top = textGrob("Histogramy estymatorow beta1 - porównanie", gp=gpar(fontsize=20)))
+```
+
+## Histogramy $\gamma, \rho$
+```{r gathered_gamma, fig.width = 15, fig.height = 20}
+grid.arrange(
+  visu_zad2$gamma_hist + labs(title = "n = 20, k = 3, p = 4, REML", subtitle = "")  + xlim(1.3, 3.2), 
+  visu_zad3$gamma_hist + labs(title = "n = 500, k = 3, p = 4, REML", subtitle = "")  + xlim(1.3, 3.2),
+  visu_zad4$gamma_hist + labs(title = "n = 20, k = 30, p = 4, REML", subtitle = "")  + xlim(1.3, 3.2),
+  visu_zad5$gamma_hist + labs(title = "n = 20, k = 3, p = 40, REML", subtitle = "")  + xlim(1.3, 3.2),
+  visu_zad6$gamma_hist + labs(title = "n = 20, k = 3, p = 4, ML", subtitle = "")  + xlim(1.3, 3.2),
+  visu_zad6_n500$gamma_hist + labs(title = "n = 500, k = 3, p = 4, ML", subtitle = "")  + xlim(1.3, 3.2),
+  ncol = 2, 
+  top = textGrob("Histogramy estymatorow gamma - porównanie", gp=gpar(fontsize=20)))
+```
+
+```{r gathered_ro, fig.width = 15, fig.height = 20}
+grid.arrange(
+  visu_zad2$ro_hist + labs(title = "n = 20, k = 3, p = 4, REML", subtitle = "")  + xlim(-0.6, 1.2), 
+  visu_zad3$ro_hist + labs(title = "n = 500, k = 3, p = 4, REML", subtitle = "")  + xlim(-0.6, 1.2),
+  visu_zad4$ro_hist + labs(title = "n = 20, k = 30, p = 4, REML", subtitle = "")  + xlim(-0.6, 1.2),
+  visu_zad5$ro_hist + labs(title = "n = 20, k = 3, p = 40, REML", subtitle = "")  + xlim(-0.6, 1.2),
+  visu_zad6$ro_hist + labs(title = "n = 20, k = 3, p = 4, ML", subtitle = "")  + xlim(-0.6, 1.2),
+  visu_zad6_n500$ro_hist + labs(title = "n = 500, k = 3, p = 4, ML", subtitle = "")  + xlim(-0.6, 1.2),
+  ncol = 2, 
+  top = textGrob("Histogramy estymatorow ro - porównanie", gp=gpar(fontsize=20)))
+```
